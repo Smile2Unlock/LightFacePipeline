@@ -1,0 +1,23 @@
+{
+  "phase1_lcf_yolo11n_b64_640": {
+    "steps": 30,
+    "elapsed_s": 8.232,
+    "ms_per_step": 274.39,
+    "peak_allocated_mib": 16269.5,
+    "peak_reserved_mib": 19868.0
+  },
+  "phase2_edgeface_s_b256_112": {
+    "steps": 50,
+    "elapsed_s": 4.047,
+    "ms_per_step": 80.93,
+    "peak_allocated_mib": 2399.1,
+    "peak_reserved_mib": 2594.0
+  },
+  "phase3_st_fas_lite_b32x8": {
+    "steps": 40,
+    "elapsed_s": 3.041,
+    "ms_per_step": 76.03,
+    "peak_allocated_mib": 2187.5,
+    "peak_reserved_mib": 2226.0
+  }
+}

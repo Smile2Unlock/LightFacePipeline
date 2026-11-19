@@ -1,0 +1,238 @@
+{
+  "hardware_and_storage": {
+    "hostname": "crdnotebook-2121269383744987137-ation-ciger-21669",
+    "python": "3.11.9",
+    "torch_version": "2.9.0",
+    "hip_version": "6.3.26093",
+    "cuda_available": true,
+    "bf16_supported": true,
+    "cpu_count": 128,
+    "ram_total_gib": 503.63,
+    "ram_available_gib": 411.78,
+    "gpu": {
+      "name": "BW",
+      "gcnArchName": "gfx936:sramecc+:xnack-",
+      "total_memory_mib": 65520.0,
+      "multi_processor_count": 80,
+      "major": 9,
+      "minor": 3
+    },
+    "allocator_env": {
+      "PYTORCH_HIP_ALLOC_CONF": "expandable_segments:True",
+      "PYTORCH_ALLOC_CONF": null
+    },
+    "preinstalled_packages": {
+      "flash_attn": "2.6.1",
+      "triton": "3.5.1",
+      "transformers": "4.57.6",
+      "accelerate": "1.15.0",
+      "safetensors": "0.7.0",
+      "huggingface_hub": "0.36.0",
+      "einops": "0.8.2"
+    },
+    "storage": {
+      "/workspace": {
+        "exists": true,
+        "total_gib": 1759.35,
+        "used_gib": 834.06,
+        "free_gib": 835.85,
+        "writable": true
+      },
+      "/public/home/ation_ciger": {
+        "exists": true,
+        "total_gib": 9557995.12,
+        "used_gib": 4342367.87,
+        "free_gib": 5215627.25,
+        "writable": true
+      },
+      "/public/share/ation_ciger": {
+        "exists": true,
+        "total_gib": 9557995.12,
+        "used_gib": 4342370.03,
+        "free_gib": 5215625.1,
+        "writable": false,
+        "write_error": "[Errno 30] Read-only file system: '/public/share/ation_ciger/.rocm_write_probe_1142088'"
+      },
+      "/work1/share/ation_ciger": {
+        "exists": true,
+        "total_gib": 436.09,
+        "used_gib": 95.34,
+        "free_gib": 318.52,
+        "writable": false,
+        "write_error": "[Errno 30] Read-only file system: '/work1/share/ation_ciger/.rocm_write_probe_1142088'"
+      },
+      "/workspace/LightFacePipeline/repo": {
+        "exists": true,
+        "total_gib": 1759.35,
+        "used_gib": 834.06,
+        "free_gib": 835.85,
+        "writable": true
+      }
+    }
+  },
+  "precision_benchmark": {
+    "conv_dwsep_64x3x320x320": {
+      "bf16": {
+        "ok": true,
+        "ms_per_step": 42.033,
+        "last_loss": 0.000154,
+        "peak_allocated_mib": 1447.86,
+        "peak_reserved_mib": 1652.0
+      },
+      "fp16": {
+        "ok": true,
+        "ms_per_step": 16.83,
+        "last_loss": 0.000119,
+        "peak_allocated_mib": 1447.86,
+        "peak_reserved_mib": 1652.0
+      },
+      "fp32": {
+        "ok": true,
+        "ms_per_step": 21.426,
+        "last_loss": 0.000123,
+        "peak_allocated_mib": 2662.48,
+        "peak_reserved_mib": 3054.0
+      }
+    },
+    "vit_b_4blk_64x257x768": {
+      "bf16": {
+        "ok": true,
+        "ms_per_step": 42.319,
+        "last_loss": 0.984002,
+        "peak_allocated_mib": 2434.04,
+        "peak_reserved_mib": 2662.0
+      },
+      "fp16": {
+        "ok": true,
+        "ms_per_step": 42.552,
+        "last_loss": 0.984002,
+        "peak_allocated_mib": 2434.04,
+        "peak_reserved_mib": 2662.0
+      },
+      "fp32": {
+        "ok": true,
+        "ms_per_step": 104.327,
+        "last_loss": 0.984007,
+        "peak_allocated_mib": 4579.12,
+        "peak_reserved_mib": 4920.0
+      }
+    },
+    "adaface_cosine_fp32_cast": {
+      "bf16": {
+        "ok": true,
+        "loss": 12.07632
+      },
+      "fp16": {
+        "ok": true,
+        "loss": 12.29957
+      }
+    },
+    "recommended_precision": "fp16"
+  },
+  "sdpa_probe": {
+    "bf16": {
+      "vit_257": {
+        "flash_attention": {
+          "ok": true,
+          "ms_per_step": 1.451
+        },
+        "efficient_attention": {
+          "ok": false,
+          "error": "No available kernel. Aborting execution."
+        },
+        "math": {
+          "ok": true,
+          "ms_per_step": 6.143
+        }
+      },
+      "temporal_8": {
+        "flash_attention": {
+          "ok": true,
+          "ms_per_step": 0.321
+        },
+        "efficient_attention": {
+          "ok": false,
+          "error": "No available kernel. Aborting execution."
+        },
+        "math": {
+          "ok": true,
+          "ms_per_step": 0.838
+        }
+      }
+    },
+    "fp16": {
+      "vit_257": {
+        "flash_attention": {
+          "ok": true,
+          "ms_per_step": 1.521
+        },
+        "efficient_attention": {
+          "ok": false,
+          "error": "No available kernel. Aborting execution."
+        },
+        "math": {
+          "ok": true,
+          "ms_per_step": 6.113
+        }
+      },
+      "temporal_8": {
+        "flash_attention": {
+          "ok": true,
+          "ms_per_step": 0.322
+        },
+        "efficient_attention": {
+          "ok": false,
+          "error": "No available kernel. Aborting execution."
+        },
+        "math": {
+          "ok": true,
+          "ms_per_step": 0.84
+        }
+      }
+    },
+    "recommended_backend": {
+      "bf16": "flash_attention",
+      "fp16": "flash_attention"
+    }
+  },
+  "vram_stress_64gb": {
+    "dtype_used": "fp16",
+    "phase1_detector": {
+      "ok": true,
+      "batch_size": 128,
+      "steps": 9,
+      "elapsed_s": 1.218,
+      "imgs_per_sec": 946.0,
+      "peak_allocated_mib": 11599.97,
+      "peak_reserved_mib": 13448.0
+    },
+    "phase2_recognizer": {
+      "ok": true,
+      "pairs_per_step": 512,
+      "images_per_step": 1024,
+      "partial_fc_classes": 30000,
+      "steps": 6,
+      "elapsed_s": 1.984,
+      "pairs_per_sec": 1548.5,
+      "peak_allocated_mib": 5085.6,
+      "peak_reserved_mib": 7634.0
+    },
+    "phase3_liveness": {
+      "ok": true,
+      "clips_per_step": 64,
+      "frames_per_step": 512,
+      "steps": 6,
+      "elapsed_s": 2.55,
+      "clips_per_sec": 150.6,
+      "peak_allocated_mib": 4383.44,
+      "peak_reserved_mib": 6804.0
+    }
+  },
+  "dataloader_gpu_degrade_stress": {
+    "ok": true,
+    "num_workers": 8,
+    "total_frames": 256,
+    "elapsed_s": 1.746,
+    "frames_per_sec": 146.6
+  }
+}

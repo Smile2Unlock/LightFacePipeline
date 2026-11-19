@@ -1,0 +1,198 @@
+{
+  "param_counts": {
+    "LCF": 890,
+    "LCFYOLO11Face5pt": 1843338,
+    "LCFYuNetS": 393322,
+    "EdgeFaceXS": 1672260,
+    "EdgeFaceS": 4092616,
+    "STFASLiteClip": 1219549
+  },
+  "main_bundle_yolo11n_edgeface_s_stfas": {
+    "color_space": "RGB",
+    "landmark_order": [
+      "left_eye_center",
+      "right_eye_center",
+      "nose_tip",
+      "left_mouth_corner",
+      "right_mouth_corner"
+    ],
+    "arcface_dst_112": [
+      [
+        38.29460144042969,
+        51.6963005065918
+      ],
+      [
+        73.53179931640625,
+        51.501399993896484
+      ],
+      [
+        56.02519989013672,
+        71.73660278320312
+      ],
+      [
+        41.54930114746094,
+        92.3655014038086
+      ],
+      [
+        70.72989654541016,
+        92.2041015625
+      ]
+    ],
+    "fas_clip_len": 8,
+    "fas_crop_size": 128,
+    "fas_scales": [
+      1.5,
+      2.7
+    ],
+    "fas_classes": [
+      "live",
+      "print",
+      "replay",
+      "mask_cutout",
+      "frozen_rigid"
+    ],
+    "recommended_thresholds": {
+      "det_score_th": 0.45,
+      "rec_cosine_th": 0.36,
+      "rec_norm_min": 8.0,
+      "liveness_th": 0.5,
+      "clarity_th": 0.35
+    },
+    "models": {
+      "detector": {
+        "model": "detector_5pt_lcf.onnx",
+        "size_mb": 7.138,
+        "sha256": "a97a50da73dbf61bc6a64a7f67d161392a4f8a5eb5cb7992bf6f58991186c21a",
+        "max_abs_diff": 6.103515625e-05,
+        "passed": true,
+        "input": "rgb_01 [1,3,640,640] in [0,1] (raw unenhanced RGB)"
+      },
+      "recognizer": {
+        "model": "recognizer_edgeface.onnx",
+        "size_mb": 15.672,
+        "sha256": "0639ce20584dbc9d2c283579fe46b4897fd20049ae2a4da8f71793ffee9dea56",
+        "max_abs_diff": 3.814697265625e-06,
+        "passed": true,
+        "input": "rgb_norm [1,3,112,112] = (rgb/255 - 0.5)/0.5"
+      },
+      "fas_clip": {
+        "model": "fas_clip.onnx",
+        "size_mb": 4.503,
+        "sha256": "ecd74f95caae95994779e3842c0acd01009c19cafedc51930c00dfc3623cb83b",
+        "max_abs_diff": 4.76837158203125e-07,
+        "passed": true,
+        "input": "clip_tex/clip_ctx [1,8,3,128,128] in [0,1]"
+      },
+      "fas_spatial_enc": {
+        "model": "fas_spatial_enc.onnx",
+        "size_mb": 2.153,
+        "sha256": "a288871cf040a97d5f47aa3deb0dd1d1776df0d79e48f1910a37eb75eee563f5",
+        "max_abs_diff": 1.430511474609375e-06,
+        "passed": true,
+        "input": "tex_curr/tex_prev/ctx_curr [1,3,128,128] in [0,1]"
+      },
+      "fas_temporal_head": {
+        "model": "fas_temporal_head.onnx",
+        "size_mb": 2.327,
+        "sha256": "a921b3ed13056e280ea7b438adbea9e9948b60615f04c4708ef215afaf086ef9",
+        "max_abs_diff": 2.5331974029541016e-07,
+        "passed": true,
+        "input": "spatial_seq [1,8,192], quality_seq [1,8,1]"
+      }
+    },
+    "deploy_bundle_fp32_mb": 27.29,
+    "streaming_equivalence": {
+      "max_abs_diff_live_prob": 0.0,
+      "max_abs_diff_spoof_logits": 0.0,
+      "max_abs_diff_clarity": 0.0,
+      "max_abs_diff": 0.0,
+      "passed": true
+    },
+    "e2e_smoke": {
+      "frames_processed": 8,
+      "embedding_dim": 512,
+      "embedding_l2_norm": 0.9999998807907104,
+      "feature_norm_quality": 13.109996795654297,
+      "live_prob": 0.1459282636642456,
+      "clarity_score": 0.5556961297988892,
+      "spoof_logits": [
+        -0.12345126271247864,
+        -0.13175076246261597,
+        0.6835784316062927,
+        0.5710386633872986,
+        -0.6063064932823181
+      ],
+      "det_top_score_smoke": 0.010987013578414917
+    },
+    "cpu_benchmark": {
+      "threads_1": {
+        "detector": {
+          "threads": 1,
+          "load_ms": 106.84,
+          "p50_ms": 236.391,
+          "p95_ms": 245.187,
+          "rss_mib": 1028.18
+        },
+        "recognizer": {
+          "threads": 1,
+          "load_ms": 84.27,
+          "p50_ms": 10.31,
+          "p95_ms": 10.437,
+          "rss_mib": 1028.33
+        },
+        "fas_spatial": {
+          "threads": 1,
+          "load_ms": 32.01,
+          "p50_ms": 5.575,
+          "p95_ms": 5.609,
+          "rss_mib": 1028.33
+        },
+        "fas_temporal": {
+          "threads": 1,
+          "load_ms": 13.41,
+          "p50_ms": 0.341,
+          "p95_ms": 0.349,
+          "rss_mib": 1028.33
+        }
+      },
+      "threads_4": {
+        "detector": {
+          "threads": 4,
+          "load_ms": 92.27,
+          "p50_ms": 153.23,
+          "p95_ms": 171.449,
+          "rss_mib": 1028.5
+        },
+        "recognizer": {
+          "threads": 4,
+          "load_ms": 93.84,
+          "p50_ms": 7.522,
+          "p95_ms": 7.658,
+          "rss_mib": 1028.5
+        },
+        "fas_spatial": {
+          "threads": 4,
+          "load_ms": 32.43,
+          "p50_ms": 3.517,
+          "p95_ms": 3.556,
+          "rss_mib": 1028.5
+        },
+        "fas_temporal": {
+          "threads": 4,
+          "load_ms": 13.74,
+          "p50_ms": 0.326,
+          "p95_ms": 0.341,
+          "rss_mib": 1028.5
+        }
+      }
+    }
+  },
+  "ultra_light_yunet_edgeface_xs_stfas_mb": {
+    "detector_yunet_s_mb": 1.553,
+    "recognizer_edgeface_xs_mb": 6.437,
+    "fas_streaming_mb": 4.48,
+    "deploy_bundle_fp32_mb": 12.47,
+    "yunet_onnx_diff": 6.103515625e-05,
+    "edgeface_xs_onnx_diff": 2.86102294921875e-06
+  }
+}

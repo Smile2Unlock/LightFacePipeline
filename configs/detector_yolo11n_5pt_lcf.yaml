@@ -1,0 +1,35 @@
+seed: 42
+model:
+  arch: lcf_yolo11n_5pt
+  use_lcf: true
+  use_p2: true
+  width_mult: 0.22
+  reg_max: 8
+
+train:
+  # Validated on Hygon BW gfx936 ROCm/DTK stress test: FP16 is 2.5x faster than BF16 on Conv/DW-SepConv
+  precision: fp16
+  sdpa_backend: flash_attention
+  batch_size: 128
+  multiscales: [320, 480, 640]
+  num_workers: 4
+  stage1_epochs: 50
+  stage2_epochs: 30
+  lr_backbone: 0.0002
+  lr_head_lcf: 0.001
+  stage2_lr: 0.00005
+  weight_decay: 0.0001
+  ema_decay: 0.9999
+  hla_weight: 0.5
+  pseudo_conf_thresh: 0.80
+  run_dir: /workspace/LightFacePipeline/runs/detector_yolo11n_5pt_lcf
+  backup_dir: /public/home/ation_ciger/LightFacePipeline/checkpoints/detector
+
+data:
+  darkface_dir: /workspace/LightFacePipeline/datasets/darkface/data
+  darkface_split: splits/darkface_split_5000_1000.json
+  wider_train_jsonl: /workspace/LightFacePipeline/datasets/manifests/wider_train_5pt.jsonl
+  closeup_5pt_jsonl: /workspace/LightFacePipeline/datasets/manifests/closeup_5pt.jsonl
+  darkface_paired_jsonl: /workspace/LightFacePipeline/datasets/manifests/darkface_paired_789.jsonl
+  darkface_unlabeled_jsonl: /workspace/LightFacePipeline/datasets/manifests/darkface_unlabeled_9000.jsonl
+  hard_neg_jsonl: /workspace/LightFacePipeline/datasets/manifests/coco_indoor_neg.jsonl

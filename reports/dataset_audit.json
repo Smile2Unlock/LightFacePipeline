@@ -1,0 +1,142 @@
+{
+  "hf_endpoint": "https://hf-mirror.com",
+  "datasets": [
+    {
+      "phase": "Phase 1 (Detector)",
+      "name": "DarkFace_Train_2021 (6k labeled + 9k unlabeled + 789 paired)",
+      "approx_gb": 4.1,
+      "over_1gb": true,
+      "local_hint": "/home/ation_ciger/Projects/Smile2Unlock_v2/build/research/darkface/DarkFace_Train_2021.zip",
+      "remote_target": "/workspace/LightFacePipeline/datasets/darkface/",
+      "source": "Local Smile2Unlock_v2 archive (SHA256 verified) / Google Drive 10W3TDvEAlZfEt88hMxoEuRULr42bIV7s",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 1 (Detector)",
+      "name": "WIDER FACE Train + Val (with RetinaFace 5-pt labels)",
+      "approx_gb": 3.5,
+      "over_1gb": true,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/widerface/",
+      "source": "WIDER FACE official / HuggingFace mirror",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 1 (Detector)",
+      "name": "300W / WFLW / CelebA close-up 5-pt subset",
+      "approx_gb": 1.6,
+      "over_1gb": true,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/closeup_5pt/",
+      "source": "Academic benchmark / HF mirror",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 1 (Detector)",
+      "name": "COCO indoor hard negatives (~5k person-free frames)",
+      "approx_gb": 0.9,
+      "over_1gb": false,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/coco_indoor_neg/",
+      "source": "COCO 2017 val/train subset",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 2 (Recognizer)",
+      "name": "CASIA-WebFace (smoke, 490k imgs / 10k IDs)",
+      "approx_gb": 4.0,
+      "over_1gb": true,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/casia_webface/",
+      "source": "Academic face dataset",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 2 (Recognizer)",
+      "name": "WebFace4M (production, 4.2M imgs / 206k IDs)",
+      "approx_gb": 22.0,
+      "over_1gb": true,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/webface4m/",
+      "source": "InsightFace WebFace4M (research only)",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 2 (Eval)",
+      "name": "LFW / CFP-FP / AgeDB-30 / CPLFW / CALFW / IJB-C / TinyFace",
+      "approx_gb": 5.5,
+      "over_1gb": true,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/rec_eval/",
+      "source": "InsightFace eval packs",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 3 (Liveness)",
+      "name": "OULU-NPU + SiW + CASIA-FASD + Replay-Attack + MSU-MFSD",
+      "approx_gb": 35.0,
+      "over_1gb": true,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/fas_videos/",
+      "source": "Academic FAS video datasets",
+      "remote_exists": false,
+      "local_exists": false
+    },
+    {
+      "phase": "Phase 3 (Liveness)",
+      "name": "CelebA-Spoof (static Stage-1 spatial warmup only)",
+      "approx_gb": 18.0,
+      "over_1gb": true,
+      "local_hint": null,
+      "remote_target": "/workspace/LightFacePipeline/datasets/celeba_spoof/",
+      "source": "CelebA-Spoof official release",
+      "remote_exists": false,
+      "local_exists": false
+    }
+  ],
+  "teachers": [
+    {
+      "phase": "Phase 2 Teacher",
+      "repo_id": "minchul/cvlface_adaface_vit_base_kprpe_webface12m",
+      "approx_gb": 0.45,
+      "over_1gb": false,
+      "meta_file": "config.json",
+      "metadata_probe": {
+        "reachable": false,
+        "url": "https://hf-mirror.com/minchul/cvlface_adaface_vit_base_kprpe_webface12m/raw/main/config.json",
+        "error": "The read operation timed out"
+      }
+    },
+    {
+      "phase": "Phase 3 Teacher",
+      "repo_id": "facebook/dinov2-with-registers-base",
+      "approx_gb": 0.35,
+      "over_1gb": false,
+      "meta_file": "config.json",
+      "metadata_probe": {
+        "reachable": false,
+        "url": "https://hf-mirror.com/facebook/dinov2-with-registers-base/raw/main/config.json",
+        "error": "The read operation timed out"
+      }
+    }
+  ],
+  "total_estimated_dataset_gb": 94.6,
+  "total_estimated_teacher_gb": 0.8,
+  "over_1gb_items": [
+    "DarkFace_Train_2021 (6k labeled + 9k unlabeled + 789 paired)",
+    "WIDER FACE Train + Val (with RetinaFace 5-pt labels)",
+    "300W / WFLW / CelebA close-up 5-pt subset",
+    "CASIA-WebFace (smoke, 490k imgs / 10k IDs)",
+    "WebFace4M (production, 4.2M imgs / 206k IDs)",
+    "LFW / CFP-FP / AgeDB-30 / CPLFW / CALFW / IJB-C / TinyFace",
+    "OULU-NPU + SiW + CASIA-FASD + Replay-Attack + MSU-MFSD",
+    "CelebA-Spoof (static Stage-1 spatial warmup only)"
+  ]
+}

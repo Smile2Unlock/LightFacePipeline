@@ -1,0 +1,27 @@
+seed: 42
+model:
+  arch: st_fas_lite
+  feat_dim: 192
+  clip_len: 8
+  num_classes: 5
+
+teacher:
+  model_id: facebook/dinov2-with-registers-base
+  hf_endpoint: https://hf-mirror.com
+  lora_r: 16
+  offline_config_only: false
+
+train:
+  precision: fp16
+  sdpa_backend: flash_attention
+  batch_size_clips: 64
+  num_workers: 4
+  epochs: 50
+  lr: 0.0003
+  weight_decay: 0.0001
+  ema_decay: 0.9995
+  run_dir: /workspace/LightFacePipeline/runs/liveness_st_fas_lite
+  backup_dir: /public/home/ation_ciger/LightFacePipeline/checkpoints/liveness
+
+data:
+  train_manifest: /workspace/LightFacePipeline/datasets/manifests/fas_video_clips_train.jsonl

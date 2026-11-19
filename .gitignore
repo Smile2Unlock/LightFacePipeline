@@ -1,0 +1,49 @@
+# Bytecode / Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Datasets & archives
+datasets/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.7z
+*.rar
+
+# Model weights, checkpoints & binaries
+checkpoints/
+runs/
+cache/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.onnx.data
+*.bin
+*.csta
+artifacts/models/
+
+# Secrets & local env
+.env
+.env.*
+*.key
+*.pem
+*.ppk
+
+# Logs & OS junk
+*.log
+.DS_Store
+.vscode/
+.idea/

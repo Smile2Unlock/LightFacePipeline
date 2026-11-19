@@ -1,0 +1,33 @@
+seed: 42
+model:
+  arch: edgeface_s
+  emb_dim: 512
+
+teacher:
+  model_id: minchul/cvlface_adaface_vit_base_kprpe_webface12m
+  hf_endpoint: https://hf-mirror.com
+  offline_proxy: false
+
+train:
+  precision: fp16
+  sdpa_backend: flash_attention
+  batch_size_pairs: 512
+  num_workers: 4
+  epochs: 16
+  lr_backbone: 0.0002
+  lr_head: 0.0005
+  weight_decay: 0.0005
+  partial_fc_rate: 0.20
+  ema_decay: 0.9995
+  run_dir: /workspace/LightFacePipeline/runs/recognizer_edgeface_s
+  backup_dir: /public/home/ation_ciger/LightFacePipeline/checkpoints/recognizer_s
+
+loss:
+  lambda1: 1.0
+  lambda2: 1.5
+  lambda3: 3.0
+  lambda4: 0.5
+
+data:
+  num_classes: 205990
+  train_manifest: /workspace/LightFacePipeline/datasets/manifests/webface4m_train.jsonl
