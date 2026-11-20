@@ -1,4 +1,4 @@
-"""Phase 1 Detector losses: TAL assigner, DFL + EIoU, masked 5-pt WingLoss, and HLA feature distillation."""
+"""Phase 1 Detector losses: fast candidate-filtered TAL assigner, DFL + EIoU, masked 5-pt WingLoss, and HLA distillation."""
 
 from __future__ import annotations
 
@@ -24,8 +24,7 @@ class WingLoss(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         diff = (pred - target).abs()
         small = diff < self.w
-        loss = torch.where(small, self.w * torch.log1p(diff / self.epsilon), diff - self.c)
-        return loss
+        return torch.where(small, self.w * torch.log1p(diff / self.epsilon), diff - self.c)
 
 
 class HLAFeatureDistillLoss(nn.Module):
@@ -48,18 +47,17 @@ class HLAFeatureDistillLoss(nn.Module):
                 sf_proj = F.interpolate(sf_proj, size=tf_f.shape[-2:], mode="bilinear", align_corners=False)
 
             b, c, h, w = sf_proj.shape
-            # Channel-wise KL divergence (CWD)
             s_prob = F.log_softmax(sf_proj.view(b, c, h * w) / self.temp, dim=-1)
             t_prob = F.softmax(tf_f.view(b, c, h * w) / self.temp, dim=-1)
             cwd = F.kl_div(s_prob, t_prob, reduction="batchmean") * (self.temp ** 2) / max(c, 1)
-
-            # Spatial-channel cosine alignment
             cos = 1.0 - F.cosine_similarity(sf_proj, tf_f, dim=1).mean()
             total = total + cwd + 0.5 * cos
         return total / max(len(self.adapters), 1)
 
 
-def _generate_anchor_points(img_hw: Tuple[int, int], strides: List[int], device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+def _generate_anchor_points(
+    img_hw: Tuple[int, int], strides: List[int], device: torch.device
+) -> Tuple[torch.Tensor, torch.Tensor]:
     ih, iw = img_hw
     pts: List[torch.Tensor] = []
     stride_vec: List[torch.Tensor] = []
@@ -74,17 +72,17 @@ def _generate_anchor_points(img_hw: Tuple[int, int], strides: List[int], device:
 
 
 class DetectorLoss(nn.Module):
-    """Combined TAL-style Anchor-Free Detector Loss with strict `has_landmarks` mask."""
+    """Combined TAL-style Anchor-Free Detector Loss with per-face landmark validity masking."""
 
     def __init__(
         self,
         strides: List[int],
-        reg_max: int = 16,
+        reg_max: int = 12,
         topk: int = 10,
-        cls_weight: float = 1.0,
-        box_weight: float = 5.0,
+        cls_weight: float = 0.5,
+        box_weight: float = 7.5,
         dfl_weight: float = 1.5,
-        kpt_weight: float = 2.0,
+        kpt_weight: float = 1.2,
     ) -> None:
         super().__init__()
         self.strides = strides
@@ -94,7 +92,16 @@ class DetectorLoss(nn.Module):
         self.box_weight = box_weight
         self.dfl_weight = dfl_weight
         self.kpt_weight = kpt_weight
-        self.wing = WingLoss(w=10.0, epsilon=2.0)
+        self.wing = WingLoss(w=6.0, epsilon=1.0)
+        self._anchor_cache: Dict[Tuple[int, int, str], Tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def _get_anchors(self, img_hw: Tuple[int, int], device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        key = (img_hw[0], img_hw[1], str(device))
+        cached = self._anchor_cache.get(key)
+        if cached is None:
+            cached = _generate_anchor_points(img_hw, self.strides, device)
+            self._anchor_cache[key] = cached
+        return cached
 
     @torch.no_grad()
     def _assign_tal(
@@ -105,7 +112,7 @@ class DetectorLoss(nn.Module):
         gt_boxes: torch.Tensor,
         gt_valid: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Task-Aligned Assigner per image. Returns (fg_mask [N], target_box [N,4], matched_gt_idx [N], target_score [N])."""
+        """Candidate-filtered Task-Aligned Assigner with tiny-face nearest-anchor fallback & soft target norm."""
         n_anc = anchor_pts.shape[0]
         valid_idx = gt_valid.nonzero(as_tuple=False).squeeze(1)
         if valid_idx.numel() == 0:
@@ -116,27 +123,64 @@ class DetectorLoss(nn.Module):
             )
 
         gboxes = gt_boxes[valid_idx]  # [M, 4]
-        # Inside GT box check
         ax = anchor_pts[:, 0:1]
         ay = anchor_pts[:, 1:2]
-        in_box = (ax >= gboxes[None, :, 0]) & (ax <= gboxes[None, :, 2]) & (ay >= gboxes[None, :, 1]) & (ay <= gboxes[None, :, 3])
-        ious = box_iou(pred_boxes.float(), gboxes.float())  # [N, M]
-        align_metric = (pred_scores.float().clamp(1e-6, 1.0)[:, None] ** 0.5) * (ious.clamp(min=0.0) ** 6.0)
-        align_metric = align_metric * in_box.float()
+        in_box = (
+            (ax >= gboxes[None, :, 0])
+            & (ax <= gboxes[None, :, 2])
+            & (ay >= gboxes[None, :, 1])
+            & (ay <= gboxes[None, :, 3])
+        )
 
-        # Select top-k candidates per GT
-        k = min(self.topk, n_anc)
-        _, topk_idx = align_metric.topk(k, dim=0)
-        cand_mask = torch.zeros_like(in_box)
-        cand_mask.scatter_(0, topk_idx, True)
-        cand_mask = cand_mask & in_box
+        # Tiny-face fallback: if a tiny DarkFace box (<4px) falls between grid centers, assign nearest anchor
+        empty_gt = in_box.sum(dim=0) == 0
+        if empty_gt.any():
+            gcx = 0.5 * (gboxes[:, 0] + gboxes[:, 2])
+            gcy = 0.5 * (gboxes[:, 1] + gboxes[:, 3])
+            dist2 = (ax - gcx[None, :]) ** 2 + (ay - gcy[None, :]) ** 2
+            nearest = dist2.argmin(dim=0)
+            empty_idx = empty_gt.nonzero(as_tuple=False).squeeze(1)
+            in_box[nearest[empty_idx], empty_idx] = True
 
-        # Resolve multi-GT conflicts by highest IoU
-        masked_iou = ious * cand_mask.float()
-        best_iou, best_m = masked_iou.max(dim=1)
-        fg_mask = cand_mask.any(dim=1)
-        matched_gt = valid_idx[best_m]
-        target_scores = torch.where(fg_mask, best_iou.clamp(0.0, 1.0), torch.zeros_like(best_iou))
+        cand_rows = in_box.any(dim=1)
+        cand_idx = cand_rows.nonzero(as_tuple=False).squeeze(1)
+        if cand_idx.numel() == 0:
+            return (
+                torch.zeros(n_anc, dtype=torch.bool, device=anchor_pts.device),
+                torch.zeros(n_anc, dtype=torch.long, device=anchor_pts.device),
+                torch.zeros(n_anc, dtype=torch.float32, device=anchor_pts.device),
+            )
+
+        c_in_box = in_box[cand_idx]  # [K, M]
+        c_ious = box_iou(pred_boxes[cand_idx].float(), gboxes.float())  # [K, M]
+        c_scores = pred_scores[cand_idx].float().clamp(1e-6, 1.0)[:, None]  # [K, 1]
+        c_align = (c_scores ** 0.5) * (c_ious.clamp(min=1e-3) ** 6.0) * c_in_box.float()
+
+        k = min(self.topk, cand_idx.numel())
+        _, topk_c = c_align.topk(k, dim=0)
+        c_cand_mask = torch.zeros_like(c_in_box)
+        c_cand_mask.scatter_(0, topk_c, True)
+        c_cand_mask = c_cand_mask & c_in_box
+
+        c_masked_iou_pos = c_ious * c_cand_mask.float()
+        c_masked_iou_tie = torch.where(c_cand_mask, c_ious, torch.full_like(c_ious, -1.0))
+        best_iou_c, best_m_c = c_masked_iou_tie.max(dim=1)
+        c_fg = c_cand_mask.any(dim=1)
+
+        # YOLO11 TAL soft-target normalization: prevents score^0.5 * iou^6 from vanishing at epoch 0
+        c_pos_align = c_align * c_cand_mask.float()
+        max_align_per_gt = c_pos_align.amax(dim=0, keepdim=True).clamp(min=1e-20)
+        max_iou_per_gt = c_masked_iou_pos.amax(dim=0, keepdim=True)
+        norm_align = c_pos_align * (max_iou_per_gt / max_align_per_gt)
+        c_target_scores = torch.where(c_fg, norm_align.amax(dim=1).clamp(0.0, 1.0), torch.zeros_like(best_iou_c))
+
+        fg_mask = torch.zeros(n_anc, dtype=torch.bool, device=anchor_pts.device)
+        matched_gt = torch.zeros(n_anc, dtype=torch.long, device=anchor_pts.device)
+        target_scores = torch.zeros(n_anc, dtype=torch.float32, device=anchor_pts.device)
+        fg_anchors = cand_idx[c_fg]
+        fg_mask[fg_anchors] = True
+        matched_gt[fg_anchors] = valid_idx[best_m_c[c_fg]]
+        target_scores[fg_anchors] = c_target_scores[c_fg]
         return fg_mask, matched_gt, target_scores
 
     def forward(
@@ -147,15 +191,9 @@ class DetectorLoss(nn.Module):
         gt_valid: torch.Tensor,
         gt_kpts: Optional[torch.Tensor] = None,
         has_landmarks: Optional[torch.Tensor] = None,
+        gt_kpts_valid: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Compute supervised detection + masked 5-pt landmark losses.
-
-        Args:
-            gt_boxes: `[B, M, 4]` xyxy in pixels.
-            gt_valid: `[B, M]` bool mask for valid GT faces.
-            gt_kpts: `[B, M, 5, 2]` pixel coordinates (ignored whenever `has_landmarks[b] == 0`).
-            has_landmarks: `[B]` bool/float mask (1 for WIDER/300W, 0 for DarkFace).
-        """
+        """Compute supervised detection + strictly masked 5-pt landmark losses (batched, minimal GPU sync)."""
         pred_boxes = outputs["boxes_xyxy"]
         pred_scores = outputs["scores"]
         pred_kpts = outputs["kpts"]
@@ -164,42 +202,47 @@ class DetectorLoss(nn.Module):
 
         b, n_anc, _ = pred_boxes.shape
         device = pred_boxes.device
-        anchor_pts, anchor_strides = _generate_anchor_points(img_hw, self.strides, device)
+        anchor_pts, anchor_strides = self._get_anchors(img_hw, device)
         if anchor_pts.shape[0] != n_anc:
             raise ValueError(f"Anchor count mismatch: {anchor_pts.shape[0]} vs {n_anc}")
 
-        total_cls = pred_boxes.new_zeros((), dtype=torch.float32)
+        fg_masks = torch.zeros((b, n_anc), dtype=torch.bool, device=device)
+        matched_gts = torch.zeros((b, n_anc), dtype=torch.long, device=device)
+        target_scores = torch.zeros((b, n_anc), dtype=torch.float32, device=device)
+
+        valid_counts = gt_valid.sum(dim=1).tolist()
+        with torch.no_grad():
+            for i in range(b):
+                if valid_counts[i] == 0:
+                    continue
+                fg_i, mgt_i, tsc_i = self._assign_tal(
+                    anchor_pts, pred_boxes[i].detach(), pred_scores[i].detach(), gt_boxes[i], gt_valid[i]
+                )
+                fg_masks[i] = fg_i
+                matched_gts[i] = mgt_i
+                target_scores[i] = tsc_i
+
+        total_cls = F.binary_cross_entropy_with_logits(cls_logits.float(), target_scores, reduction="sum")
+        target_score_sum = target_scores.sum()
+
         total_box = pred_boxes.new_zeros((), dtype=torch.float32)
         total_dfl = pred_boxes.new_zeros((), dtype=torch.float32)
         total_kpt = pred_boxes.new_zeros((), dtype=torch.float32)
-        fg_count = 0
-        kpt_fg_count = 0
+        kpt_weight_sum = pred_boxes.new_zeros((), dtype=torch.float32)
+        has_kpt_loss = False
 
-        for i in range(b):
-            fg_mask, matched_gt, target_score = self._assign_tal(
-                anchor_pts, pred_boxes[i].detach(), pred_scores[i].detach(), gt_boxes[i], gt_valid[i]
-            )
-            # Classification BCE with soft TAL alignment target
-            cls_loss_i = F.binary_cross_entropy_with_logits(
-                cls_logits[i].float(), target_score.float(), reduction="sum"
-            )
-            total_cls = total_cls + cls_loss_i
-
-            n_fg = int(fg_mask.sum().item())
-            if n_fg == 0:
-                continue
-            fg_count += n_fg
-
-            t_boxes = gt_boxes[i][matched_gt[fg_mask]].float()
-            p_boxes = pred_boxes[i][fg_mask].float()
-            weights = target_score[fg_mask].float().clamp(min=0.1)
+        b_idx, a_idx = fg_masks.nonzero(as_tuple=True)
+        if b_idx.numel() > 0:
+            m_idx = matched_gts[b_idx, a_idx]
+            t_boxes = gt_boxes[b_idx, m_idx].float()
+            p_boxes = pred_boxes[b_idx, a_idx].float()
+            weights = target_scores[b_idx, a_idx].float().clamp(min=0.05)
 
             eiou = box_eiou_loss(p_boxes, t_boxes)
-            total_box = total_box + (eiou * weights).sum()
+            total_box = (eiou * weights).sum()
 
-            # DFL target in grid units
-            ap = anchor_pts[fg_mask]
-            st = anchor_strides[fg_mask].unsqueeze(-1)
+            ap = anchor_pts[a_idx]
+            st = anchor_strides[a_idx].unsqueeze(-1)
             tl = (ap[:, 0:1] - t_boxes[:, 0:1]) / st
             tt = (ap[:, 1:2] - t_boxes[:, 1:2]) / st
             tr = (t_boxes[:, 2:3] - ap[:, 0:1]) / st
@@ -211,28 +254,44 @@ class DetectorLoss(nn.Module):
             wl = tr_int.float() - target_ltrb
             wr = 1.0 - wl
 
-            p_dfl = dfl_dist[i][fg_mask].reshape(-1, self.reg_max)
+            p_dfl = dfl_dist[b_idx, a_idx].float().reshape(-1, self.reg_max)
             dfl_loss = (
                 F.cross_entropy(p_dfl, tl_int.reshape(-1), reduction="none") * wl.reshape(-1)
                 + F.cross_entropy(p_dfl, tr_int.reshape(-1), reduction="none") * wr.reshape(-1)
-            ).view(n_fg, 4).mean(dim=-1)
-            total_dfl = total_dfl + (dfl_loss * weights).sum()
+            ).view(-1, 4).mean(dim=-1)
+            total_dfl = (dfl_loss * weights).sum()
 
-            # Strictly gated 5-pt WingLoss! DarkFace (has_landmarks == 0) receives ZERO gradient!
-            if gt_kpts is not None and has_landmarks is not None and bool(has_landmarks[i].item()):
-                t_kpts = gt_kpts[i][matched_gt[fg_mask]].float()  # [n_fg, 5, 2]
-                p_kpts_xy = pred_kpts[i][fg_mask, :, :2].float()
-                # Normalize pixel error by box diagonal/stride to stabilize scale
-                scale_norm = (t_boxes[:, 2] - t_boxes[:, 0]).clamp(min=8.0).view(n_fg, 1, 1) / 32.0
-                wing_err = self.wing(p_kpts_xy / scale_norm, t_kpts / scale_norm).mean(dim=(1, 2))
-                total_kpt = total_kpt + (wing_err * weights).sum()
-                kpt_fg_count += n_fg
+            # Strictly gated 5-pt WingLoss: BOTH image-level `has_landmarks[b_idx]` AND per-face `gt_kpts_valid`
+            if gt_kpts is not None and has_landmarks is not None:
+                k_mask = has_landmarks[b_idx]
+                if gt_kpts_valid is not None:
+                    k_mask = k_mask & gt_kpts_valid[b_idx, m_idx]
+                if k_mask.any():
+                    has_kpt_loss = True
+                    bk = b_idx[k_mask]
+                    ak = a_idx[k_mask]
+                    mk = m_idx[k_mask]
+                    t_kpts = gt_kpts[bk, mk].float()
+                    p_kpts_xy = pred_kpts[bk, ak, :, :2].float()
+                    kb = t_boxes[k_mask]
+                    kw = weights[k_mask]
+                    # Scale-invariant area-root norm: sub-pixel 1-3% NME sits inside WingLoss log cusp
+                    scale_norm = torch.sqrt(
+                        (kb[:, 2] - kb[:, 0]).clamp(min=4.0) * (kb[:, 3] - kb[:, 1]).clamp(min=4.0)
+                    ).view(-1, 1, 1) / 32.0
+                    wing_err = self.wing(p_kpts_xy / scale_norm, t_kpts / scale_norm).mean(dim=(1, 2))
+                    total_kpt = (wing_err * kw).sum()
+                    kpt_weight_sum = kw.sum()
 
-        denom = max(float(fg_count), 1.0)
+        denom = target_score_sum.clamp(min=1.0)
         l_cls = (total_cls / denom) * self.cls_weight
         l_box = (total_box / denom) * self.box_weight
         l_dfl = (total_dfl / denom) * self.dfl_weight
-        l_kpt = (total_kpt / max(float(kpt_fg_count), 1.0)) * self.kpt_weight if kpt_fg_count > 0 else pred_boxes.new_zeros(())
+        l_kpt = (
+            (total_kpt / kpt_weight_sum.clamp(min=1.0)) * self.kpt_weight
+            if has_kpt_loss
+            else pred_boxes.new_zeros(())
+        )
 
         return {
             "loss": l_cls + l_box + l_dfl + l_kpt,

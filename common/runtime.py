@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import random
 import subprocess
@@ -68,11 +69,37 @@ def get_amp_context(device: torch.device, precision: str = "fp16"):
     return get_amp_autocast(device, precision), get_grad_scaler(device, precision)
 
 
+_FLASH_ATTN_AVAILABLE: Optional[bool] = None
+
+
+def _has_working_flash_sdpa() -> bool:
+    """Probe once whether ROCm/CUDA FlashAttention SDPA kernels load cleanly."""
+    global _FLASH_ATTN_AVAILABLE
+    if _FLASH_ATTN_AVAILABLE is not None:
+        return _FLASH_ATTN_AVAILABLE
+    if not torch.cuda.is_available():
+        _FLASH_ATTN_AVAILABLE = False
+        return False
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        q = torch.empty((1, 4, 8, 48), device="cuda", dtype=torch.float16)
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+            torch.nn.functional.scaled_dot_product_attention(q, q, q)
+        _FLASH_ATTN_AVAILABLE = True
+    except Exception:
+        _FLASH_ATTN_AVAILABLE = False
+    return _FLASH_ATTN_AVAILABLE
+
+
 def get_sdpa_context(backend: str = "flash_attention"):
     """Select verified SDPA backend (`flash_attention` or `math` on Hygon ROCm/DTK)."""
     if not torch.cuda.is_available():
         return nullcontext()
     from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    if not _has_working_flash_sdpa():
+        return sdpa_kernel([SDPBackend.MATH])
 
     mapping = {
         "flash_attention": [SDPBackend.FLASH_ATTENTION, SDPBackend.MATH],
@@ -86,19 +113,23 @@ def get_sdpa_context(backend: str = "flash_attention"):
 class ModelEMA:
     """Exponential Moving Average copy of model weights + buffers."""
 
-    def __init__(self, model: nn.Module, decay: float = 0.9999) -> None:
+    def __init__(self, model: nn.Module, decay: float = 0.9995, warmup_tau: float = 500.0) -> None:
         self.ema = copy.deepcopy(model).eval()
         self.decay = decay
+        self.warmup_tau = warmup_tau
+        self.updates = 0
         for p in self.ema.parameters():
             p.requires_grad_(False)
 
     @torch.no_grad()
     def update(self, model: nn.Module) -> None:
+        self.updates += 1
+        d = self.decay * (1.0 - math.exp(-self.updates / self.warmup_tau)) if self.warmup_tau > 0 else self.decay
         msd = model.state_dict()
         for k, v in self.ema.state_dict().items():
             src = msd[k]
             if v.dtype.is_floating_point:
-                v.mul_(self.decay).add_(src.detach(), alpha=1.0 - self.decay)
+                v.mul_(d).add_(src.detach(), alpha=1.0 - d)
             else:
                 v.copy_(src)
 

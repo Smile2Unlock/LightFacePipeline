@@ -98,7 +98,14 @@ class C2PSA(nn.Module):
 class DecoupledFaceHead(nn.Module):
     """Anchor-free decoupled classification, DFL bbox (4 * reg_max), and 5-pt keypoint (5 * 3) head."""
 
-    def __init__(self, ch_list: List[int], strides: List[int], reg_max: int = 16, num_kpts: int = 5) -> None:
+    def __init__(
+        self,
+        ch_list: List[int],
+        strides: List[int],
+        reg_max: int = 16,
+        num_kpts: int = 5,
+        kpt_hidden: Optional[int] = None,
+    ) -> None:
         super().__init__()
         self.strides = strides
         self.reg_max = reg_max
@@ -108,6 +115,7 @@ class DecoupledFaceHead(nn.Module):
 
         c2 = max(24, ch_list[0] // 2)
         c3 = max(32, ch_list[0] // 2)
+        c_kpt = kpt_hidden if kpt_hidden is not None else c3
         self.cls_convs = nn.ModuleList(
             nn.Sequential(ConvBNAct(ch, c2, 3), ConvBNAct(c2, c2, 3), nn.Conv2d(c2, 1, 1)) for ch in ch_list
         )
@@ -115,7 +123,8 @@ class DecoupledFaceHead(nn.Module):
             nn.Sequential(ConvBNAct(ch, c3, 3), ConvBNAct(c3, c3, 3), nn.Conv2d(c3, self.no_box, 1)) for ch in ch_list
         )
         self.kpt_convs = nn.ModuleList(
-            nn.Sequential(ConvBNAct(ch, c3, 3), ConvBNAct(c3, c3, 3), nn.Conv2d(c3, self.no_kpt, 1)) for ch in ch_list
+            nn.Sequential(ConvBNAct(ch, c_kpt, 3), ConvBNAct(c_kpt, c_kpt, 3), nn.Conv2d(c_kpt, self.no_kpt, 1))
+            for ch in ch_list
         )
         self.register_buffer("proj", torch.arange(reg_max, dtype=torch.float32), persistent=False)
         self._init_biases()
@@ -123,6 +132,10 @@ class DecoupledFaceHead(nn.Module):
     def _init_biases(self) -> None:
         for conv_seq in self.cls_convs:
             nn.init.constant_(conv_seq[-1].bias, -4.5)  # ~0.01 prior prob
+        dfl_bias = (-0.3 * torch.arange(self.reg_max, dtype=torch.float32)).repeat(4)
+        for conv_seq in self.box_convs:
+            with torch.no_grad():
+                conv_seq[-1].bias.copy_(dfl_bias)
 
     def forward_raw(self, feats: List[torch.Tensor]) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
         cls_outs = [m(f) for m, f in zip(self.cls_convs, feats)]
@@ -209,7 +222,8 @@ class LCFYOLO11Face5pt(nn.Module):
         use_lcf: bool = True,
         use_p2: bool = True,
         width_mult: float = 0.22,
-        reg_max: int = 8,
+        reg_max: int = 12,
+        kpt_hidden: Optional[int] = 40,
     ) -> None:
         super().__init__()
         self.use_lcf = use_lcf
@@ -261,7 +275,7 @@ class LCFYOLO11Face5pt(nn.Module):
             strides = [8, 16, 32]
 
         self.fpn_channels = [c3, c4, c5]
-        self.head = DecoupledFaceHead(head_ch, strides=strides, reg_max=reg_max, num_kpts=5)
+        self.head = DecoupledFaceHead(head_ch, strides=strides, reg_max=reg_max, num_kpts=5, kpt_hidden=kpt_hidden)
 
     def forward(self, x: torch.Tensor) -> Dict[str, object]:
         """Forward RGB `[B, 3, H, W]` in `[0, 1]` returning decoded predictions and P3/P4/P5 features."""
@@ -313,5 +327,5 @@ class DetectorONNXWrapper(nn.Module):
 
 
 def build_detector_teacher(use_p2: bool = True) -> LCFYOLO11Face5pt:
-    """Build wider normal-light anchor teacher (YOLO11l-scale pure PyTorch, no LCF)."""
-    return LCFYOLO11Face5pt(use_lcf=False, use_p2=use_p2, width_mult=0.75, reg_max=16)
+    """Build wider normal-light anchor teacher (pure PyTorch, no LCF)."""
+    return LCFYOLO11Face5pt(use_lcf=False, use_p2=use_p2, width_mult=0.65, reg_max=12, kpt_hidden=None)

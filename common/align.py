@@ -249,3 +249,64 @@ def unletterbox_coords(
         out_kpts = k
 
     return out_boxes, out_kpts
+
+
+def composite_tight_face_on_canvas(
+    face_rgb: np.ndarray,
+    boxes_xyxy: np.ndarray,
+    kpts_5: np.ndarray,
+    bg_rgb: Optional[np.ndarray] = None,
+    canvas_size: int = 480,
+    target_patch_size: Optional[int] = None,
+    center_xy: Optional[Tuple[int, int]] = None,
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Softly feather-blend a tight face crop (e.g. WFLW 112x112) onto a full-scene background canvas."""
+    if rng is None:
+        rng = np.random.default_rng(42)
+    fh, fw = face_rgb.shape[:2]
+
+    if bg_rgb is not None and bg_rgb.size > 0:
+        canvas = cv2.resize(bg_rgb, (canvas_size, canvas_size), interpolation=cv2.INTER_LINEAR).copy()
+    else:
+        base_val = int(rng.integers(90, 175))
+        canvas = np.full((canvas_size, canvas_size, 3), base_val, dtype=np.uint8)
+
+    if target_patch_size is None:
+        target_patch_size = int(rng.integers(int(canvas_size * 0.24), int(canvas_size * 0.60)))
+    target_patch_size = max(48, min(canvas_size - 16, target_patch_size))
+
+    scale = float(target_patch_size) / float(max(fh, fw))
+    nh = max(16, int(round(fh * scale)))
+    nw = max(16, int(round(fw * scale)))
+    patch = cv2.resize(face_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
+
+    if center_xy is None:
+        x0 = int(rng.integers(8, max(9, canvas_size - nw - 8)))
+        y0 = int(rng.integers(8, max(9, canvas_size - nh - 8)))
+    else:
+        x0 = max(0, min(canvas_size - nw, center_xy[0] - nw // 2))
+        y0 = max(0, min(canvas_size - nh, center_xy[1] - nh // 2))
+
+    # 8px border feather mask to prevent sharp rectangle boundary shortcuts
+    feather = max(4, min(12, nw // 10))
+    mask = np.ones((nh, nw, 1), dtype=np.float32)
+    ramp = np.linspace(0.0, 1.0, feather, dtype=np.float32)
+    mask[:, :feather, 0] *= ramp[None, :]
+    mask[:, -feather:, 0] *= ramp[::-1][None, :]
+    mask[:feather, :, 0] *= ramp[:, None]
+    mask[-feather:, :, 0] *= ramp[::-1][:, None]
+
+    roi = canvas[y0 : y0 + nh, x0 : x0 + nw].astype(np.float32)
+    blended = patch.astype(np.float32) * mask + roi * (1.0 - mask)
+    canvas[y0 : y0 + nh, x0 : x0 + nw] = np.clip(blended, 0, 255).astype(np.uint8)
+
+    new_boxes = boxes_xyxy.copy()
+    new_kpts = kpts_5.copy()
+    if len(new_boxes):
+        new_boxes[:, [0, 2]] = new_boxes[:, [0, 2]] * (float(nw) / float(fw)) + x0
+        new_boxes[:, [1, 3]] = new_boxes[:, [1, 3]] * (float(nh) / float(fh)) + y0
+    if len(new_kpts):
+        new_kpts[..., 0] = new_kpts[..., 0] * (float(nw) / float(fw)) + x0
+        new_kpts[..., 1] = new_kpts[..., 1] * (float(nh) / float(fh)) + y0
+    return canvas, new_boxes, new_kpts

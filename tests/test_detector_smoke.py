@@ -38,15 +38,34 @@ def test_has_landmarks_zero_gives_zero_kpt_grad() -> None:
     gt_valid = torch.ones((2, 1), dtype=torch.bool, device=device)
     gt_kpts = torch.zeros((2, 1, 5, 2), device=device)
     has_lm = torch.zeros((2,), dtype=torch.bool, device=device)  # DarkFace style: NO landmarks!
+    gt_kpts_valid = torch.ones((2, 1), dtype=torch.bool, device=device)
 
     model.zero_grad(set_to_none=True)
     out = model(x)
-    losses = loss_fn(out, (320, 320), gt_boxes, gt_valid, gt_kpts, has_lm)
+    losses = loss_fn(out, (320, 320), gt_boxes, gt_valid, gt_kpts, has_lm, gt_kpts_valid)
     assert float(losses["kpt_loss"].item()) == 0.0
     losses["loss"].backward()
 
     for p in model.head.kpt_convs.parameters():
         assert p.grad is None or float(p.grad.abs().max().item()) == 0.0
+
+
+def test_per_face_gt_kpts_valid_mask() -> None:
+    device = get_device()
+    model = LCFYOLO11Face5pt(use_p2=True).to(device)
+    loss_fn = DetectorLoss(strides=model.head.strides, reg_max=model.head.reg_max).to(device)
+
+    x = torch.rand(1, 3, 320, 320, device=device)
+    gt_boxes = torch.tensor([[[80.0, 80.0, 160.0, 170.0], [200.0, 100.0, 260.0, 170.0]]], device=device)
+    gt_valid = torch.ones((1, 2), dtype=torch.bool, device=device)
+    gt_kpts = torch.full((1, 2, 5, 2), -1.0, device=device)
+    has_lm = torch.ones((1,), dtype=torch.bool, device=device)
+    # Both faces have missing landmarks (like WIDER -1.0 faces) -> kpt_loss MUST be 0
+    gt_kpts_valid = torch.zeros((1, 2), dtype=torch.bool, device=device)
+
+    out = model(x)
+    losses = loss_fn(out, (320, 320), gt_boxes, gt_valid, gt_kpts, has_lm, gt_kpts_valid)
+    assert float(losses["kpt_loss"].item()) == 0.0
 
 
 def test_detector_stage1_and_stage2_smoke_on_gpu() -> None:

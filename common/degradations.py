@@ -92,8 +92,8 @@ class PhysicalLowLightDegrader(nn.Module):
         mode: str = "detector",
         gamma_range: Tuple[float, float] = (2.0, 2.4),
         exp_range: Tuple[float, float] = (0.04, 0.50),
-        shot_sigma_range: Tuple[float, float] = (0.005, 0.04),
-        read_sigma_range: Tuple[float, float] = (0.003, 0.025),
+        shot_sigma_range: Tuple[float, float] = (0.003, 0.015),
+        read_sigma_range: Tuple[float, float] = (0.0005, 0.004),
         blur_prob: float = 0.40,
         uvc_prob: float = 0.85,
         jpeg_quality_range: Tuple[int, int] = (45, 85),
@@ -166,13 +166,14 @@ class PhysicalLowLightDegrader(nn.Module):
         for i in range(b):
             k = int(kind[i].item())
             if k == 0:
-                # Strong window backlight: dim face strongly, brighten non-face background toward 160-255/255
+                # Strong window backlight: dim face strongly, brighten exterior background without leaking white fog onto face
                 face_atten = float(torch.empty(1, device=device).uniform_(0.25, 0.65).item())
                 bg_gain = float(torch.empty(1, device=device).uniform_(1.4, 2.8).item())
                 bg_lift = float(torch.empty(1, device=device).uniform_(0.22, 0.55).item())
                 fm = face_mask[i : i + 1]
-                mult[i : i + 1] = fm * face_atten + (1.0 - fm) * bg_gain
-                bg_boost[i : i + 1] = (1.0 - fm) * bg_lift
+                bg_mask = torch.sigmoid((0.28 - fm) * 16.0)
+                mult[i : i + 1] = (1.0 - bg_mask) * face_atten + bg_mask * bg_gain
+                bg_boost[i : i + 1] = bg_mask * bg_lift
             elif k == 1:
                 # Cold monitor glow from lower-center onto face, very dark background
                 sx = float(torch.empty(1, device=device).uniform_(-0.15, 0.15).item())
@@ -370,7 +371,7 @@ class PhysicalLowLightDegrader(nn.Module):
         lin_exposed = self._enforce_luma_bounds(
             lin_exposed,
             inv_gamma.expand(b, t, 1, 1, 1),
-            face_mask.unsqueeze(1).expand(b, t, 1, h, w) if bboxes_norm is not None or self.mode == "recognizer" else None,
+            face_mask.unsqueeze(1).expand(b, t, 1, h, w) if bboxes_norm is not None else None,
         )
 
         # 3) Sensor shot + read noise (STRICTLY i.i.d. per frame!) + AWB color drift (consistent across T)
