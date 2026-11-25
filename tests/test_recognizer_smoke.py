@@ -8,12 +8,13 @@ from torch.utils.data import DataLoader
 
 from common.degradations import PhysicalLowLightDegrader
 from common.runtime import ModelEMA, get_device
+from eval_e2e_onnx import export_onnx_model, verify_pytorch_vs_onnx
 from recognizer.dataset import SyntheticRecognizerSmokeDataset
-from recognizer.edgeface import EdgeFaceS, EdgeFaceXS
+from recognizer.edgeface import EdgeFaceS, EdgeFaceXS, OfficialEdgeFace
 from recognizer.eval_rec import evaluate_clean_to_dark_pairs
 from recognizer.losses import AdaDistillLoss
 from recognizer.teacher_cvlface import CVLfaceTeacherWrapper
-from recognizer.train import train_one_epoch_recognizer
+from recognizer.train import set_recognizer_warmup_trainable, train_one_epoch_recognizer
 
 
 def test_edgeface_param_counts_and_outputs() -> None:
@@ -57,3 +58,44 @@ def test_recognizer_adface_partialfc_adadistill_gpu_smoke() -> None:
     same = np.array([1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0])
     rec_metrics = evaluate_clean_to_dark_pairs(ema.ema, g, p, same, device)
     assert "tar_at_far" in rec_metrics and "auc" in rec_metrics
+
+
+def test_official_edgeface_onnx_and_vectorized_adadistill(tmp_path) -> None:
+    device = get_device()
+    model = OfficialEdgeFace("edgeface_s_gamma_05", emb_dim=512).to(device).eval()
+    n_params = sum(p.numel() for p in model.parameters())
+    assert 3_000_000 <= n_params <= 4_500_000, f"Unexpected OfficialEdgeFace params: {n_params}"
+
+    # Verify warmup freeze toggles early stages cleanly
+    set_recognizer_warmup_trainable(model, freeze_early=True)
+    assert not any(p.requires_grad for p in model.backbone.model.stages[0].parameters())
+    assert all(p.requires_grad for p in model.backbone.model.stages[2].parameters())
+    set_recognizer_warmup_trainable(model, freeze_early=False)
+    assert all(p.requires_grad for p in model.parameters())
+
+    # Verify ONNX export + parity < 1e-4
+    onnx_path = tmp_path / "official_edgeface_s.onnx"
+    dummy = np.random.uniform(-1.0, 1.0, (1, 3, 112, 112)).astype(np.float32)
+    export_onnx_model(
+        model,
+        (torch.from_numpy(dummy),),
+        onnx_path,
+        input_names=["rgb_norm"],
+        output_names=["l2_emb", "feat_norm"],
+    )
+    ver = verify_pytorch_vs_onnx(model.cpu(), onnx_path, {"rgb_norm": dummy})
+    assert ver["passed"], f"ONNX parity failed: {ver}"
+    assert ver["size_mb"] <= 16.0
+
+    # Verify vectorized teacher center update, PartialFC init from teacher & unseen negative masking
+    crit = AdaDistillLoss(num_classes=64, partial_fc_rate=0.5, lambda_clean_kd=1.5).to(device)
+    zc = torch.nn.functional.normalize(torch.randn(8, 512, device=device, requires_grad=True), dim=1)
+    zd = torch.nn.functional.normalize(torch.randn(8, 512, device=device, requires_grad=True), dim=1)
+    zt = torch.nn.functional.normalize(torch.randn(8, 512, device=device), dim=1)
+    nc = torch.full((8, 1), 20.0, device=device)
+    nd = torch.full((8, 1), 15.0, device=device)
+    labels = torch.tensor([0, 1, 2, 0, 1, 3, 4, 5], device=device)
+    out = crit(zc, nc, zd, nd, zt, labels)
+    assert crit.teacher_seen[:6].all() and not crit.teacher_seen[6:].any()
+    assert all(torch.isfinite(v) for v in out.values())
+

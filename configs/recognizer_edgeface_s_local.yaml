@@ -1,0 +1,43 @@
+seed: 42
+model:
+  arch: edgeface_s_gamma_05
+  emb_dim: 512
+  init_ckpt: datasets/pretrained/edgeface/edgeface_s_gamma_05.pt
+
+teacher:
+  model_id: datasets/pretrained/cvlface_vit_base_kprpe_webface12m
+  hf_endpoint: https://hf-mirror.com
+  offline_proxy: false
+
+train:
+  precision: fp16
+  sdpa_backend: flash_attention
+  batch_size_pairs: 128
+  grad_accum: 4
+  num_workers: 4
+  epochs: 8
+  lr_backbone: 0.00015
+  lr_head: 0.0005
+  weight_decay: 0.0005
+  partial_fc_rate: 0.20
+  ema_decay: 0.9995
+  dark_apply_prob: 0.90
+  max_clean_drop_pct: 0.30
+  run_dir: runs/recognizer_edgeface_s_local
+
+loss:
+  lambda1: 1.0
+  lambda2: 1.5
+  lambda3: 3.0
+  lambda4: 0.5
+  lambda_clean_kd: 1.5
+
+data:
+  dataset_type: blob
+  num_classes: 50000
+  train_manifest: datasets/webface4m_local
+  eval_dir: datasets/rec_eval
+  kpt_jitter_sigma_range: [1.2, 2.5]
+  scale_jitter: 0.04
+  angle_jitter_deg: 4.0
+  jitter_prob: 0.90

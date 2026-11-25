@@ -440,7 +440,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 4 ONNX Export & End-to-End Verification")
     parser.add_argument("--out-dir", type=Path, default=Path("artifacts"))
     parser.add_argument("--det-arch", default="lcf_yolo11n_5pt", choices=["lcf_yolo11n_5pt", "lcf_yunet_s"])
-    parser.add_argument("--rec-arch", default="edgeface_s", choices=["edgeface_s", "edgeface_xs", "mobilefacenet_w15"])
+    parser.add_argument(
+        "--rec-arch",
+        default="edgeface_s",
+        choices=["edgeface_s", "edgeface_xs", "edgeface_s_gamma_05", "edgeface_xs_gamma_06", "mobilefacenet_w15"],
+    )
     parser.add_argument("--det-ckpt", type=Path, default=None)
     parser.add_argument("--rec-ckpt", type=Path, default=None)
     parser.add_argument("--fas-ckpt", type=Path, default=None)

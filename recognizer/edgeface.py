@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -302,11 +303,93 @@ class MobileFaceNetFallback(nn.Module):
         return raw / norm, norm
 
 
+class OfficialLoRaLin(nn.Module):
+    """Low-Rank Linear layer matching official `otroshi/edgeface` checkpoint parameter layout."""
+
+    def __init__(self, in_features: int, out_features: int, rank: int, bias: bool = True) -> None:
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.rank = rank
+        self.linear1 = nn.Linear(in_features, rank, bias=False)
+        self.linear2 = nn.Linear(rank, out_features, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear2(self.linear1(x))
+
+
+def _replace_linear_with_lowrank(module: nn.Module, rank_ratio: float = 0.5) -> nn.Module:
+    for name, child in module.named_children():
+        if isinstance(child, nn.Linear) and "head" not in name:
+            in_f = child.in_features
+            out_f = child.out_features
+            rank = max(2, int(min(in_f, out_f) * rank_ratio))
+            has_bias = child.bias is not None
+            setattr(module, name, OfficialLoRaLin(in_f, out_f, rank=rank, bias=has_bias))
+        else:
+            _replace_linear_with_lowrank(child, rank_ratio)
+    return module
+
+
+class _TimmEdgeFaceBackbone(nn.Module):
+    """Wrapper matching `TimmFRWrapperV2` `model.*` state_dict key hierarchy."""
+
+    def __init__(self, timm_name: str, emb_dim: int = 512) -> None:
+        super().__init__()
+        import timm
+
+        self.featdim = emb_dim
+        self.model_name = timm_name
+        self.model = timm.create_model(timm_name, pretrained=False)
+        self.model.reset_classifier(emb_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
+class OfficialEdgeFace(nn.Module):
+    """Official Idiap EdgeFace (`edgeface_s_gamma_05` / `edgeface_xs_gamma_06`) returning `(l2_emb, feat_norm)`."""
+
+    _VARIANTS: Dict[str, Tuple[str, float]] = {
+        "edgeface_s_gamma_05": ("edgenext_small", 0.5),
+        "edgeface_xs_gamma_06": ("edgenext_x_small", 0.6),
+    }
+
+    def __init__(self, variant: str = "edgeface_s_gamma_05", emb_dim: int = 512) -> None:
+        super().__init__()
+        if variant not in self._VARIANTS:
+            raise ValueError(f"Unknown OfficialEdgeFace variant: {variant}")
+        timm_name, rank_ratio = self._VARIANTS[variant]
+        self.variant = variant
+        self.emb_dim = emb_dim
+        self.backbone = _replace_linear_with_lowrank(_TimmEdgeFaceBackbone(timm_name, emb_dim=emb_dim), rank_ratio)
+
+    def load_official_pretrained(self, ckpt_path: Path) -> None:
+        """Load official Idiap weights (`model.*`) or full wrapper state dict (`backbone.*`)."""
+        state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        if isinstance(state, dict) and ("ema" in state or "model" in state) and not any(
+            k.startswith("model.stem.") for k in state.keys()
+        ):
+            state = state.get("ema", state.get("model", state))
+        keys = list(state.keys())
+        if keys and all(k.startswith("backbone.") for k in keys):
+            self.load_state_dict(state, strict=True)
+        else:
+            self.backbone.load_state_dict(state, strict=True)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        raw = self.backbone(x).float()
+        feat_norm = torch.norm(raw, p=2, dim=1, keepdim=True).clamp(min=1e-6)
+        return raw / feat_norm, feat_norm
+
+
 def build_recognizer_student(arch: str = "edgeface_s", emb_dim: int = 512) -> nn.Module:
     if arch == "edgeface_s":
         return EdgeFaceS(emb_dim=emb_dim)
     if arch == "edgeface_xs":
         return EdgeFaceXS(emb_dim=emb_dim)
+    if arch in ("edgeface_s_gamma_05", "edgeface_xs_gamma_06"):
+        return OfficialEdgeFace(variant=arch, emb_dim=emb_dim)
     if arch == "mobilefacenet_w15":
         return MobileFaceNetFallback(width_mult=1.5, emb_dim=emb_dim)
     raise ValueError(f"Unknown recognizer arch: {arch}")
