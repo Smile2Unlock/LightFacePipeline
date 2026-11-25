@@ -515,6 +515,8 @@ def main() -> None:
         stats["lr_head"] = round(optimizer.param_groups[-1]["lr"], 7)
 
         if epoch % args.eval_every == 0 or epoch == epochs:
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
             clean_rec, clean_nme = 0.0, 1.0
             dark_rec, dark_nme = 0.0, 1.0
             if wflw_test_path and wflw_test_path.is_file():
@@ -554,6 +556,8 @@ def main() -> None:
             if score > best_score:
                 best_score = score
                 save_checkpoint(run_dir / "best.pt", student, optimizer=optimizer, ema=ema, epoch=epoch, metrics=stats, backup_dir=backup_dir)
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
 
         with open(history_path, "a", encoding="utf-8") as hf:
             hf.write(json.dumps(stats) + "\n")

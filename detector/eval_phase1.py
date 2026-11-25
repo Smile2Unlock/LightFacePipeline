@@ -85,6 +85,11 @@ def predict_tensor_01(
     b_sel = boxes[mask]
     s_sel = scores[mask]
     k_sel = kpts[mask]
+    if s_sel.numel() > 2000:
+        top_idx = torch.topk(s_sel, k=2000).indices
+        b_sel = b_sel[top_idx]
+        s_sel = s_sel[top_idx]
+        k_sel = k_sel[top_idx]
     keep = nms(b_sel, s_sel, iou_threshold=iou_thresh)[:300]
     b_orig, k_orig = unletterbox_coords(
         b_sel[keep].cpu().numpy(),

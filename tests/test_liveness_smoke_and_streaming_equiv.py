@@ -26,22 +26,32 @@ def test_st_fas_lite_clip_vs_streaming_pytorch_equiv() -> None:
     clip_tex = torch.rand(2, 8, 3, 128, 128, device=device)
     clip_ctx = torch.rand(2, 8, 3, 128, 128, device=device)
 
-    with torch.no_grad():
-        c_live, c_logits, c_clarity = model(clip_tex, clip_ctx)
+    prev_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32 if device.type == "cuda" else None
+    prev_cudnn_tf32 = torch.backends.cudnn.allow_tf32 if device.type == "cuda" else None
+    try:
+        if device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+        with torch.no_grad():
+            c_live, c_logits, c_clarity = model(clip_tex, clip_ctx)
 
-        feats = []
-        quals = []
-        for t in range(8):
-            prev = clip_tex[:, t - 1] if t > 0 else clip_tex[:, 0]
-            f_t, q_t = model.spatial_enc(clip_tex[:, t], prev, clip_ctx[:, t])
-            feats.append(f_t)
-            quals.append(q_t)
-        s_live, s_logits, s_clarity = model.temporal_head(torch.stack(feats, dim=1), torch.stack(quals, dim=1))
+            feats = []
+            quals = []
+            for t in range(8):
+                prev = clip_tex[:, t - 1] if t > 0 else clip_tex[:, 0]
+                f_t, q_t = model.spatial_enc(clip_tex[:, t], prev, clip_ctx[:, t])
+                feats.append(f_t)
+                quals.append(q_t)
+            s_live, s_logits, s_clarity = model.temporal_head(torch.stack(feats, dim=1), torch.stack(quals, dim=1))
+    finally:
+        if device.type == "cuda":
+            assert prev_matmul_tf32 is not None and prev_cudnn_tf32 is not None
+            torch.backends.cuda.matmul.allow_tf32 = prev_matmul_tf32
+            torch.backends.cudnn.allow_tf32 = prev_cudnn_tf32
 
-    # Allow 1e-4 for CUDA SM 8.9 cuDNN TF32 reduction order between batched clip vs sequential frames
-    assert torch.max(torch.abs(c_live - s_live)) < 1e-4
-    assert torch.max(torch.abs(c_logits - s_logits)) < 1e-4
-    assert torch.max(torch.abs(c_clarity - s_clarity)) < 1e-4
+    assert torch.max(torch.abs(c_live - s_live)) < 1e-5
+    assert torch.max(torch.abs(c_logits - s_logits)) < 1e-5
+    assert torch.max(torch.abs(c_clarity - s_clarity)) < 1e-5
 
 
 def test_static_frame_repetition_rejected_for_live_clips(tmp_path: Path) -> None:
