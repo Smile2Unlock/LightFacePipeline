@@ -63,10 +63,16 @@ class DualStreamDINOv2Teacher(nn.Module):
             base_vit = Dinov2WithRegistersModel.from_pretrained(target)
             self.vit_input_size = int(getattr(base_vit.config, "image_size", 224))
 
+        linear_leaf_names = {
+            name.split(".")[-1]
+            for name, mod in base_vit.named_modules()
+            if isinstance(mod, nn.Linear)
+        }
+        target_modules = ["q_proj", "v_proj"] if {"q_proj", "v_proj"}.issubset(linear_leaf_names) else ["query", "value"]
         lora_cfg = LoraConfig(
             r=lora_r,
             lora_alpha=lora_r * 2,
-            target_modules=["query", "value"],
+            target_modules=target_modules,
             lora_dropout=0.05,
             bias="none",
         )

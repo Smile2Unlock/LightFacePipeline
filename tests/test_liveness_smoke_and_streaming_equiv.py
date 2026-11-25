@@ -38,9 +38,10 @@ def test_st_fas_lite_clip_vs_streaming_pytorch_equiv() -> None:
             quals.append(q_t)
         s_live, s_logits, s_clarity = model.temporal_head(torch.stack(feats, dim=1), torch.stack(quals, dim=1))
 
-    assert torch.max(torch.abs(c_live - s_live)) < 1e-5
-    assert torch.max(torch.abs(c_logits - s_logits)) < 1e-5
-    assert torch.max(torch.abs(c_clarity - s_clarity)) < 1e-5
+    # Allow 1e-4 for CUDA SM 8.9 cuDNN TF32 reduction order between batched clip vs sequential frames
+    assert torch.max(torch.abs(c_live - s_live)) < 1e-4
+    assert torch.max(torch.abs(c_logits - s_logits)) < 1e-4
+    assert torch.max(torch.abs(c_clarity - s_clarity)) < 1e-4
 
 
 def test_static_frame_repetition_rejected_for_live_clips(tmp_path: Path) -> None:

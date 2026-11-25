@@ -1,0 +1,39 @@
+seed: 42
+model:
+  arch: lcf_yolo11n_5pt
+  use_lcf: true
+  use_p2: true
+  width_mult: 0.22
+  reg_max: 12
+
+train:
+  # Local RTX 4060 Laptop GPU (8 GB VRAM): FP16 + TF32 + grad_accum=4 matches effective batch size 64
+  precision: fp16
+  sdpa_backend: flash_attention
+  batch_size: 16
+  grad_accum: 4
+  multiscales: [480, 640, 640]
+  num_workers: 6
+  stage1_epochs: 50
+  stage2_epochs: 20
+  lr_backbone: 0.0005
+  lr_head_lcf: 0.001
+  stage2_lr: 0.00005
+  weight_decay: 0.0001
+  ema_decay: 0.9995
+  hla_weight: 3.0
+  pseudo_conf_thresh: 0.75
+  run_dir: /home/ation_ciger/Projects/LightFacePipeline/runs/detector_yolo11n_5pt_lcf
+  backup_dir: null
+
+data:
+  darkface_dir: /home/ation_ciger/Projects/LightFacePipeline/datasets/darkface/data
+  darkface_split: splits/darkface_split_5000_1000.json
+  wider_train_jsonl: /home/ation_ciger/Projects/LightFacePipeline/datasets/manifests/wider_train_5pt.jsonl
+  wider_val_jsonl: /home/ation_ciger/Projects/LightFacePipeline/datasets/manifests/wider_val.jsonl
+  wider_eval_mat_dir: /home/ation_ciger/Projects/LightFacePipeline/datasets/widerface/wider_face_split
+  wflw_train_jsonl: /home/ation_ciger/Projects/LightFacePipeline/datasets/manifests/wflw_train_5pt.jsonl
+  wflw_test_jsonl: /home/ation_ciger/Projects/LightFacePipeline/datasets/manifests/wflw_test_5pt.jsonl
+  exdark_unlabeled_jsonl: /home/ation_ciger/Projects/LightFacePipeline/datasets/manifests/exdark_unlabeled.jsonl
+  hard_neg_train_jsonl: /home/ation_ciger/Projects/LightFacePipeline/datasets/manifests/coco_hard_neg_train.jsonl
+  hard_neg_val_jsonl: /home/ation_ciger/Projects/LightFacePipeline/datasets/manifests/coco_hard_neg_val.jsonl

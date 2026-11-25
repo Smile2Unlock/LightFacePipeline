@@ -153,6 +153,7 @@ def train_one_epoch_detector(
     degrade_prob: float = 0.5,
     max_steps: Optional[int] = None,
     scaler: Optional[torch.amp.GradScaler] = None,
+    grad_accum: int = 1,
 ) -> Dict[str, float]:
     student.train()
     if stage2_semi:
@@ -160,9 +161,20 @@ def train_one_epoch_detector(
     if teacher is not None:
         teacher.eval()
     scaler = scaler or get_grad_scaler(device, precision)
+    grad_accum = max(1, int(grad_accum))
+
+    def _optimizer_step() -> None:
+        scaler.unscale_(optimizer)
+        nn.utils.clip_grad_norm_(student.parameters(), max_norm=10.0)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+        ema.update(student)
 
     stats = {"loss": 0.0, "det_loss": 0.0, "hla_loss": 0.0, "semi_loss": 0.0}
     steps = 0
+    accum_counter = 0
+    optimizer.zero_grad(set_to_none=True)
 
     for step, batch in enumerate(loader):
         if max_steps is not None and step >= max_steps:
@@ -179,7 +191,7 @@ def train_one_epoch_detector(
         apply_deg = batch["apply_degrade"].to(device, non_blocking=True)
         is_unlabeled = batch["is_unlabeled"].to(device, non_blocking=True)
 
-        target_sz = multiscales[step % len(multiscales)]
+        target_sz = multiscales[(step // grad_accum) % len(multiscales)]
         cur_h = img_raw.shape[-2]
         if target_sz != cur_h:
             scale_f = float(target_sz) / float(cur_h)
@@ -198,7 +210,6 @@ def train_one_epoch_detector(
             if n_idx.numel() > 0:
                 img_student[n_idx] = degrader(img_raw[n_idx], bboxes_norm=None)
 
-        optimizer.zero_grad(set_to_none=True)
         with get_sdpa_context(sdpa_backend), get_amp_autocast(device, precision):
             out_s = student(img_student)
 
@@ -252,18 +263,20 @@ def train_one_epoch_detector(
 
             loss = det_loss + hla_loss + semi_loss
 
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        nn.utils.clip_grad_norm_(student.parameters(), max_norm=10.0)
-        scaler.step(optimizer)
-        scaler.update()
-        ema.update(student)
+        scaler.scale(loss / float(grad_accum)).backward()
+        accum_counter += 1
+        if accum_counter >= grad_accum:
+            _optimizer_step()
+            accum_counter = 0
 
         stats["loss"] += float(loss.detach().item())
         stats["det_loss"] += float(det_loss.detach().item())
         stats["hla_loss"] += float(hla_loss.detach().item())
         stats["semi_loss"] += float(semi_loss.detach().item())
         steps += 1
+
+    if accum_counter > 0:
+        _optimizer_step()
 
     for k in stats:
         stats[k] /= max(steps, 1)
@@ -299,6 +312,7 @@ def main() -> None:
     parser.add_argument("--teacher-ckpt", type=Path, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--grad-accum", type=int, default=None)
     parser.add_argument("--eval-every", type=int, default=5)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--smoke", action="store_true")
@@ -307,6 +321,9 @@ def main() -> None:
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     seed_everything(cfg.get("seed", 42))
     device = get_device()
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     if args.mode == "teacher":
         student = build_detector_teacher(use_p2=cfg["model"].get("use_p2", True)).to(device)
@@ -440,6 +457,8 @@ def main() -> None:
         bg_image_paths=bg_paths,
     )
     batch_size = args.batch_size or cfg["train"].get("batch_size", 64)
+    grad_accum = max(1, int(args.grad_accum or cfg["train"].get("grad_accum", 1)))
+    num_workers = int(cfg["train"].get("num_workers", 4))
     # Fixed clean epoch budget (~16k samples/epoch for clean/stage1; ~12k for stage2)
     samples_per_epoch = 12000 if args.mode == "stage2" else 16000
     sampler = ds.build_weighted_sampler(num_samples=samples_per_epoch, custom_weights=custom_weights)
@@ -447,9 +466,10 @@ def main() -> None:
         ds,
         batch_size=batch_size,
         sampler=sampler,
-        num_workers=cfg["train"].get("num_workers", 4),
+        num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=(num_workers > 0),
     )
 
     default_epochs = {"teacher": 35, "clean_baseline": 45, "stage1": cfg["train"].get("stage1_epochs", 50), "stage2": cfg["train"].get("stage2_epochs", 20)}[args.mode]
@@ -488,6 +508,7 @@ def main() -> None:
             multiscales=tuple(cfg["train"].get("multiscales", [320, 480, 640])),
             degrade_prob=degrade_prob,
             scaler=scaler,
+            grad_accum=grad_accum,
         )
         scheduler.step()
         stats["epoch"] = epoch
