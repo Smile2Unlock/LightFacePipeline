@@ -1,0 +1,208 @@
+{
+  "color_space": "RGB",
+  "landmark_order": [
+    "left_eye_center",
+    "right_eye_center",
+    "nose_tip",
+    "left_mouth_corner",
+    "right_mouth_corner"
+  ],
+  "arcface_dst_112": [
+    [
+      38.29460144042969,
+      51.6963005065918
+    ],
+    [
+      73.53179931640625,
+      51.501399993896484
+    ],
+    [
+      56.02519989013672,
+      71.73660278320312
+    ],
+    [
+      41.54930114746094,
+      92.3655014038086
+    ],
+    [
+      70.72989654541016,
+      92.2041015625
+    ]
+  ],
+  "fas_clip_len": 8,
+  "fas_crop_size": 128,
+  "fas_scales": [
+    1.5,
+    2.7
+  ],
+  "fas_classes": [
+    "live",
+    "print",
+    "replay",
+    "mask_cutout",
+    "frozen_rigid"
+  ],
+  "recommended_thresholds": {
+    "det_score_th": 0.45,
+    "rec_cosine_th": 0.36,
+    "rec_norm_min": 8.0,
+    "liveness_th": 0.5,
+    "clarity_th": 0.35
+  },
+  "models": {
+    "detector": {
+      "model": "detector_5pt_lcf.onnx",
+      "size_mb": 7.343,
+      "sha256": "ec6d8e7e873dd3e7c769af27df911f9d633b4558f939d25fae776bba37c69844",
+      "max_abs_diff": 0.000244140625,
+      "max_rel_diff": 3.814697265625e-05,
+      "per_output_max_abs_diff": [
+        0.000244140625,
+        2.682209014892578e-07,
+        0.0001220703125
+      ],
+      "passed": true,
+      "input": "rgb_01 [1,3,640,640] in [0,1] (raw unenhanced RGB)"
+    },
+    "recognizer": {
+      "model": "recognizer_edgeface.onnx",
+      "size_mb": 14.113,
+      "sha256": "631293c83e33302e0e5afbbf8e04691efc4f13d2081879d42f84e372b6ca8261",
+      "max_abs_diff": 1.0728836059570312e-06,
+      "max_rel_diff": 6.258487701416016e-07,
+      "per_output_max_abs_diff": [
+        6.258487701416016e-07,
+        1.0728836059570312e-06
+      ],
+      "passed": true,
+      "input": "rgb_norm [1,3,112,112] = (rgb/255 - 0.5)/0.5"
+    },
+    "fas_clip": {
+      "model": "fas_clip.onnx",
+      "size_mb": 4.503,
+      "sha256": "acf9ee213a216027fb5c54fdadb0051138300424a09e8adf4751075195776712",
+      "max_abs_diff": 2.384185791015625e-07,
+      "max_rel_diff": 2.384185791015625e-07,
+      "per_output_max_abs_diff": [
+        0.0,
+        2.384185791015625e-07,
+        0.0
+      ],
+      "passed": true,
+      "input": "clip_tex/clip_ctx [1,8,3,128,128] in [0,1]"
+    },
+    "fas_spatial_enc": {
+      "model": "fas_spatial_enc.onnx",
+      "size_mb": 2.153,
+      "sha256": "6341d53806345275fead16af188f4844d561cfb6718e5258fabcced2b7b8006c",
+      "max_abs_diff": 1.430511474609375e-06,
+      "max_rel_diff": 1.0728836059570312e-06,
+      "per_output_max_abs_diff": [
+        1.430511474609375e-06,
+        3.725290298461914e-08
+      ],
+      "passed": true,
+      "input": "tex_curr/tex_prev/ctx_curr [1,3,128,128] in [0,1]"
+    },
+    "fas_temporal_head": {
+      "model": "fas_temporal_head.onnx",
+      "size_mb": 2.327,
+      "sha256": "bdbb3f24282b38ea28ad07ea6e27bae3198cc2d91b39bb8a6d105e619e3db4de",
+      "max_abs_diff": 8.940696716308594e-08,
+      "max_rel_diff": 8.940696716308594e-08,
+      "per_output_max_abs_diff": [
+        1.4901161193847656e-08,
+        8.940696716308594e-08,
+        0.0
+      ],
+      "passed": true,
+      "input": "spatial_seq [1,8,192], quality_seq [1,8,1]"
+    }
+  },
+  "deploy_bundle_fp32_mb": 25.936,
+  "streaming_equivalence": {
+    "max_abs_diff_live_prob": 0.0,
+    "max_abs_diff_spoof_logits": 0.0,
+    "max_abs_diff_clarity": 0.0,
+    "max_abs_diff": 0.0,
+    "passed": true
+  },
+  "e2e_smoke": {
+    "frames_processed": 8,
+    "embedding_dim": 512,
+    "embedding_l2_norm": 0.9999999403953552,
+    "feature_norm_quality": 1.7165640592575073,
+    "live_prob": 0.186558797955513,
+    "clarity_score": 0.6065996885299683,
+    "spoof_logits": [
+      0.02081257477402687,
+      -0.45443394780158997,
+      -0.5352132320404053,
+      0.6157425045967102,
+      0.3224869966506958
+    ],
+    "det_top_score_smoke": 0.021570593118667603
+  },
+  "cpu_benchmark": {
+    "threads_1": {
+      "detector": {
+        "threads": 1,
+        "load_ms": 54.56,
+        "p50_ms": 141.486,
+        "p95_ms": 186.475,
+        "rss_mib": 1200.65
+      },
+      "recognizer": {
+        "threads": 1,
+        "load_ms": 43.94,
+        "p50_ms": 6.969,
+        "p95_ms": 7.788,
+        "rss_mib": 1200.65
+      },
+      "fas_spatial": {
+        "threads": 1,
+        "load_ms": 17.83,
+        "p50_ms": 9.1,
+        "p95_ms": 9.725,
+        "rss_mib": 1200.65
+      },
+      "fas_temporal": {
+        "threads": 1,
+        "load_ms": 21.34,
+        "p50_ms": 0.382,
+        "p95_ms": 0.462,
+        "rss_mib": 1200.65
+      }
+    },
+    "threads_4": {
+      "detector": {
+        "threads": 4,
+        "load_ms": 56.54,
+        "p50_ms": 53.032,
+        "p95_ms": 55.122,
+        "rss_mib": 1200.65
+      },
+      "recognizer": {
+        "threads": 4,
+        "load_ms": 53.62,
+        "p50_ms": 3.831,
+        "p95_ms": 4.135,
+        "rss_mib": 1200.65
+      },
+      "fas_spatial": {
+        "threads": 4,
+        "load_ms": 20.32,
+        "p50_ms": 2.083,
+        "p95_ms": 2.454,
+        "rss_mib": 1200.65
+      },
+      "fas_temporal": {
+        "threads": 4,
+        "load_ms": 10.94,
+        "p50_ms": 0.213,
+        "p95_ms": 0.229,
+        "rss_mib": 1200.65
+      }
+    }
+  }
+}
