@@ -18,7 +18,7 @@ from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 
 
-def _run_aria2_batch(url_out_pairs: List[tuple[str, Path]], max_concurrent: int = 8, split: int = 8) -> None:
+def _run_aria2_batch(url_out_pairs: List[tuple[str, Path]], max_concurrent: int = 4, split: int = 8) -> None:
     """Download URLs concurrently via `aria2c --no-conf` using `-i` input file (zero RPC conflict)."""
     if not url_out_pairs:
         return
@@ -39,8 +39,10 @@ def _run_aria2_batch(url_out_pairs: List[tuple[str, Path]], max_concurrent: int 
             f"-x{split}",
             f"-s{split}",
             "-k2M",
+            "--max-tries=10",
+            "--retry-wait=5",
             "--file-allocation=none",
-            "--summary-interval=10",
+            "--summary-interval=15",
             "--console-log-level=warn",
             "-i",
             str(list_file),
@@ -84,8 +86,13 @@ def download_lfw_raw(out_dir: Path, workers: int = 12) -> Dict[str, int]:
                 )
                 for rel in missing
             ]
-            _run_aria2_batch(pairs, max_concurrent=min(16, max(4, workers)), split=1)
-        else:
+            try:
+                _run_aria2_batch(pairs, max_concurrent=min(4, max(2, workers)), split=1)
+            except subprocess.CalledProcessError as exc:
+                print(f"[lfw_raw] aria2c partial exit ({exc}); falling back to hf_hub_download for remaining files...")
+
+        still_missing = [p for p in sorted(rel_paths) if not (out_dir / "train" / p).is_file()]
+        if still_missing:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             def _dl_one(rel: str) -> str:
@@ -97,9 +104,9 @@ def download_lfw_raw(out_dir: Path, workers: int = 12) -> Dict[str, int]:
                 )
                 return rel
 
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = [ex.submit(_dl_one, rel) for rel in missing]
-                for fut in tqdm(as_completed(futs), total=len(futs), desc="Downloading lfw_raw"):
+            with ThreadPoolExecutor(max_workers=min(4, max(1, workers))) as ex:
+                futs = [ex.submit(_dl_one, rel) for rel in still_missing]
+                for fut in tqdm(as_completed(futs), total=len(futs), desc="Downloading remaining lfw_raw"):
                     fut.result()
 
     summary = {"pairs": n_pairs, "unique_images": len(rel_paths)}
