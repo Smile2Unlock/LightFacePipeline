@@ -15,22 +15,36 @@ train:
   batch_size_pairs: 256
   grad_accum: 2
   num_workers: 4
-  epochs: 8
-  lr_backbone: 0.00015
+  epochs: 6
+  use_ref_student: true
+  warmup_freeze_early: false
+  lr_early: 0.00003
+  lr_backbone: 0.00006
+  lr_student_head: 0.00008
   lr_head: 0.0005
+  warmup_opt_steps: 300
+  distill_warmup_steps: 300
   weight_decay: 0.0005
   partial_fc_rate: 0.20
-  ema_decay: 0.9995
+  ema_decay: 0.997
+  ema_warmup_tau: 0.0
   dark_apply_prob: 0.90
   max_clean_drop_pct: 0.30
   run_dir: runs/recognizer_edgeface_s_local
 
 loss:
-  lambda1: 1.0
-  lambda2: 1.5
-  lambda3: 3.0
-  lambda4: 0.5
-  lambda_clean_kd: 1.5
+  adadistill_mode: kl
+  use_kd_projector: true
+  kd_temp: 16.0
+  lambda_ada_clean: 0.25
+  lambda1: 0.5
+  lambda2: 1.0
+  lambda3: 1.5
+  lambda4: 1.0
+  lambda_clean_kd: 0.5
+  lambda_rel_kd: 15.0
+  lambda_ref_clean: 3.0
+  lambda_dark_ref: 5.0
 
 data:
   dataset_type: blob

@@ -142,3 +142,55 @@ def test_procrustes_alignment_and_precomputed_centers() -> None:
     crit.load_precomputed_teacher_centers(raw_ctrs)
     assert crit.teacher_seen.all()
 
+
+def test_rank_compatible_kl_kd_and_ref_anchor() -> None:
+    import copy
+
+    device = get_device()
+    student = OfficialEdgeFace("edgeface_s_gamma_05", emb_dim=512).to(device)
+    ref_student = copy.deepcopy(student).eval()
+    for p in ref_student.parameters():
+        p.requires_grad_(False)
+    teacher = CVLfaceTeacherWrapper(offline_proxy=True).to(device)
+    ema = ModelEMA(student, decay=0.997, warmup_tau=0.0)
+    crit = AdaDistillLoss(
+        num_classes=32,
+        partial_fc_rate=0.5,
+        lambda_ada_clean=0.25,
+        lambda1_dark_adaface=0.5,
+        lambda2_adadistill=1.0,
+        lambda3_teacher_cos=1.5,
+        lambda4_student_cos=1.0,
+        lambda_clean_kd=0.5,
+        lambda_rel_kd=15.0,
+        lambda_ref_clean=3.0,
+        lambda_dark_ref=5.0,
+        use_kd_projector=True,
+        adadistill_mode="kl",
+    ).to(device)
+    crit.load_precomputed_teacher_centers(
+        torch.nn.functional.normalize(torch.randn(32, 512), dim=1),
+        init_partial_fc=False,
+    )
+    assert crit.teacher_seen.all() and not crit.partial_fc_seen.any()
+
+    degrader = PhysicalLowLightDegrader(mode="recognizer").to(device)
+    opt = torch.optim.AdamW(list(student.parameters()) + list(crit.parameters()), lr=1e-4)
+    ds = SyntheticRecognizerSmokeDataset(n=16, num_classes=16)
+    loader = DataLoader(ds, batch_size=8, shuffle=True, num_workers=0)
+    stats = train_one_epoch_recognizer(
+        student=student,
+        teacher=teacher,
+        ema=ema,
+        loader=loader,
+        criterion=crit,
+        degrader=degrader,
+        optimizer=opt,
+        device=device,
+        precision="fp16",
+        max_steps=2,
+        ref_student=ref_student,
+    )
+    assert crit.partial_fc_seen.any()
+    assert all(np.isfinite(float(v)) for k, v in stats.items() if isinstance(v, (int, float)))
+
