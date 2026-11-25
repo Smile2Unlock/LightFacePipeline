@@ -92,21 +92,22 @@ def _cvlface_import_context(local_dir: Path) -> Iterator[None]:
 def _load_local_cvlface_model(local_dir: Path) -> nn.Module:
     from omegaconf import OmegaConf
 
-    _patch_cvlface_rpe_auto_install(local_dir)
-    with _cvlface_import_context(local_dir):
+    resolved_dir = local_dir.resolve()
+    _patch_cvlface_rpe_auto_install(resolved_dir)
+    with _cvlface_import_context(resolved_dir):
         from models import get_model
 
         with open("pretrained_model/model.yaml", "r", encoding="utf-8") as f:
             raw_conf = yaml.safe_load(f)
         model_conf = OmegaConf.create(raw_conf)
         model = get_model(model_conf)
-        pt_path = local_dir / "pretrained_model" / "model.pt"
+        pt_path = resolved_dir / "pretrained_model" / "model.pt"
         if pt_path.is_file():
             model.load_state_dict_from_path(str(pt_path))
         else:
             from safetensors.torch import load_file
 
-            sd = load_file(str(local_dir / "model.safetensors"))
+            sd = load_file(str(resolved_dir / "model.safetensors"))
             cleaned = {re.sub(r"^model\.", "", k): v for k, v in sd.items()}
             model.load_state_dict(cleaned, strict=False)
     return model

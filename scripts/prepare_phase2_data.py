@@ -6,18 +6,52 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import shutil
+import subprocess
 import tarfile
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set
 
 import numpy as np
 from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 
 
-def download_lfw_raw(out_dir: Path, workers: int = 8) -> Dict[str, int]:
+def _run_aria2_batch(url_out_pairs: List[tuple[str, Path]], max_concurrent: int = 8, split: int = 8) -> None:
+    """Download URLs concurrently via `aria2c --no-conf` using `-i` input file (zero RPC conflict)."""
+    if not url_out_pairs:
+        return
+    manifest_lines: List[str] = []
+    for url, dst in url_out_pairs:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        manifest_lines.append(url)
+        manifest_lines.append(f"  dir={dst.parent}")
+        manifest_lines.append(f"  out={dst.name}")
+    list_file = url_out_pairs[0][1].parent / ".aria2_batch.txt"
+    list_file.write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+    try:
+        cmd = [
+            "aria2c",
+            "--no-conf",
+            "-c",
+            f"-j{max_concurrent}",
+            f"-x{split}",
+            f"-s{split}",
+            "-k2M",
+            "--file-allocation=none",
+            "--summary-interval=10",
+            "--console-log-level=warn",
+            "-i",
+            str(list_file),
+        ]
+        subprocess.run(cmd, check=True)
+    finally:
+        if list_file.exists():
+            list_file.unlink()
+
+
+def download_lfw_raw(out_dir: Path, workers: int = 12) -> Dict[str, int]:
     """Download `pairs.csv` and unique referenced 250x250 RGB images from `marcelohaps/lfw`."""
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs_path = Path(
@@ -42,19 +76,31 @@ def download_lfw_raw(out_dir: Path, workers: int = 8) -> Dict[str, int]:
     print(f"[lfw_raw] pairs={n_pairs}, unique_images={len(rel_paths)}, missing={len(missing)}")
 
     if missing:
-        def _dl_one(rel: str) -> str:
-            hf_hub_download(
-                "marcelohaps/lfw",
-                f"train/{rel}",
-                repo_type="dataset",
-                local_dir=str(out_dir),
-            )
-            return rel
+        if shutil.which("aria2c"):
+            pairs = [
+                (
+                    f"https://huggingface.co/datasets/marcelohaps/lfw/resolve/main/train/{rel}",
+                    out_dir / "train" / rel,
+                )
+                for rel in missing
+            ]
+            _run_aria2_batch(pairs, max_concurrent=min(16, max(4, workers)), split=1)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_dl_one, rel) for rel in missing]
-            for fut in tqdm(as_completed(futs), total=len(futs), desc="Downloading lfw_raw"):
-                fut.result()
+            def _dl_one(rel: str) -> str:
+                hf_hub_download(
+                    "marcelohaps/lfw",
+                    f"train/{rel}",
+                    repo_type="dataset",
+                    local_dir=str(out_dir),
+                )
+                return rel
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = [ex.submit(_dl_one, rel) for rel in missing]
+                for fut in tqdm(as_completed(futs), total=len(futs), desc="Downloading lfw_raw"):
+                    fut.result()
 
     summary = {"pairs": n_pairs, "unique_images": len(rel_paths)}
     (out_dir / "meta.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -69,19 +115,31 @@ def download_webface4m_shards(shards_dir: Path, num_shards: int = 40, workers: i
     print(f"[webface4m] target_shards={num_shards}, pending_download={len(pending)}")
 
     if pending:
-        def _dl_shard(fn: str) -> Path:
-            p = hf_hub_download(
-                "gaunernst/webface4m-wds-gz",
-                fn,
-                repo_type="dataset",
-                local_dir=str(shards_dir),
-            )
-            return Path(p)
+        if shutil.which("aria2c"):
+            pairs = [
+                (
+                    f"https://huggingface.co/datasets/gaunernst/webface4m-wds-gz/resolve/main/{fn}",
+                    shards_dir / fn,
+                )
+                for fn in pending
+            ]
+            _run_aria2_batch(pairs, max_concurrent=3, split=8)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_dl_shard, fn) for fn in pending]
-            for fut in tqdm(as_completed(futs), total=len(futs), desc="Downloading WebFace4M shards"):
-                fut.result()
+            def _dl_shard(fn: str) -> Path:
+                p = hf_hub_download(
+                    "gaunernst/webface4m-wds-gz",
+                    fn,
+                    repo_type="dataset",
+                    local_dir=str(shards_dir),
+                )
+                return Path(p)
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = [ex.submit(_dl_shard, fn) for fn in pending]
+                for fut in tqdm(as_completed(futs), total=len(futs), desc="Downloading WebFace4M shards"):
+                    fut.result()
 
     return [shards_dir / fn for fn in filenames]
 
