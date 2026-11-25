@@ -8,10 +8,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import yaml
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from common.degradations import PhysicalLowLightDegrader
 from common.runtime import (
@@ -32,6 +34,95 @@ from recognizer.edgeface import OfficialEdgeFace, build_recognizer_student
 from recognizer.eval_phase2 import build_bin_protocol_cache, evaluate_fast_val
 from recognizer.losses import AdaDistillLoss
 from recognizer.teacher_cvlface import CVLfaceTeacherWrapper
+
+
+@torch.no_grad()
+def align_student_head_procrustes(
+    student: nn.Module,
+    dataset: Any,
+    device: torch.device,
+    teacher: Optional[nn.Module] = None,
+    n_samples: int = 4096,
+    batch_size: int = 256,
+) -> Dict[str, Any]:
+    """Step-0 orthogonal Procrustes rotation aligning OfficialEdgeFace's head to Teacher's hypersphere."""
+    if not (isinstance(student, OfficialEdgeFace) and hasattr(student.backbone, "model")):
+        return {"applied": False, "reason": "no_unnormalized_final_linear"}
+
+    fc = getattr(student.backbone.model.head, "fc", None)
+    final_lin = getattr(fc, "linear2", fc)
+    if not isinstance(final_lin, nn.Linear):
+        return {"applied": False, "reason": "final_fc_not_linear"}
+
+    total_n = len(dataset)
+    if total_n == 0:
+        return {"applied": False, "reason": "empty_dataset"}
+
+    take_n = min(int(n_samples), total_n)
+    indices = np.linspace(0, total_n - 1, take_n, dtype=np.int64).tolist()
+    loader = DataLoader(Subset(dataset, indices), batch_size=batch_size, shuffle=False, num_workers=0)
+
+    was_training = student.training
+    student.eval()
+    zs_list: List[torch.Tensor] = []
+    norms_list: List[torch.Tensor] = []
+    zt_list: List[torch.Tensor] = []
+    first_x: Optional[torch.Tensor] = None
+
+    for batch in loader:
+        clean_01 = batch["clean_u8"].to(device, non_blocking=True).float().div_(255.0)
+        x_clean = (clean_01 - 0.5) / 0.5
+        if first_x is None:
+            first_x = x_clean[: min(256, x_clean.shape[0])]
+        z_s, norm_s = student(x_clean)
+        if "teacher_emb" in batch:
+            z_t = F.normalize(batch["teacher_emb"].to(device, non_blocking=True).float(), dim=1)
+        elif teacher is not None:
+            kpts_norm = batch["kpts_norm"].to(device, non_blocking=True)
+            z_t = teacher(x_clean, kpts_norm)
+        else:
+            return {"applied": False, "reason": "missing_teacher_or_precomputed_emb"}
+        zs_list.append(z_s.float())
+        norms_list.append(norm_s.squeeze(-1).float())
+        zt_list.append(z_t.float())
+
+    z_all = torch.cat(zs_list, dim=0)
+    norms_all = torch.cat(norms_list, dim=0)
+    zt_all = torch.cat(zt_list, dim=0)
+
+    cos_before = float((z_all * zt_all).sum(dim=1).mean().item())
+    assert first_x is not None
+    z_sub_before, _ = student(first_x)
+    pair_before = z_sub_before @ z_sub_before.t()
+
+    # Exact orthogonal Procrustes in FP64: minimize || Z_s @ R - Z_t ||_F
+    m_mat = z_all.double().t() @ zt_all.double()
+    u_mat, _, vt_mat = torch.linalg.svd(m_mat, full_matrices=False)
+    rot = (u_mat @ vt_mat).float()
+
+    rot_t = rot.t().to(device=final_lin.weight.device, dtype=final_lin.weight.dtype)
+    final_lin.weight.data.copy_(rot_t @ final_lin.weight.data)
+    if final_lin.bias is not None:
+        final_lin.bias.data.copy_(rot_t @ final_lin.bias.data)
+
+    z_sub_after, _ = student(first_x)
+    pair_after = z_sub_after @ z_sub_after.t()
+    max_pair_cos_diff = float((pair_after - pair_before).abs().max().item())
+    z_rot_all = F.normalize(z_all @ rot.to(z_all.device), dim=1)
+    cos_after = float((z_rot_all * zt_all).sum(dim=1).mean().item())
+
+    if was_training:
+        student.train()
+
+    return {
+        "applied": True,
+        "n_samples": int(z_all.shape[0]),
+        "cos_teacher_before": round(cos_before, 5),
+        "cos_teacher_after": round(cos_after, 5),
+        "max_pair_cos_diff": max_pair_cos_diff,
+        "norm_mean": round(float(norms_all.mean().item()), 4),
+        "norm_std": round(float(norms_all.std(unbiased=False).item()), 4),
+    }
 
 
 def set_recognizer_warmup_trainable(student: nn.Module, freeze_early: bool) -> None:
@@ -104,7 +195,7 @@ def _split_optimizer_param_groups(
 
 def train_one_epoch_recognizer(
     student: nn.Module,
-    teacher: nn.Module,
+    teacher: Optional[nn.Module],
     ema: ModelEMA,
     loader: DataLoader,
     criterion: AdaDistillLoss,
@@ -120,7 +211,8 @@ def train_one_epoch_recognizer(
     dark_apply_prob: float = 0.90,
 ) -> Dict[str, float]:
     student.train()
-    teacher.eval()
+    if teacher is not None:
+        teacher.eval()
     scaler = scaler if scaler is not None else get_grad_scaler(device, precision)
     grad_accum = max(1, int(grad_accum))
 
@@ -168,8 +260,12 @@ def train_one_epoch_recognizer(
         x_dark = (dark_01 - 0.5) / 0.5
 
         with get_sdpa_context(sdpa_backend), get_amp_autocast(device, precision):
-            with torch.no_grad():
-                z_teacher = teacher(x_clean, kpts_norm)
+            if "teacher_emb" in batch:
+                z_teacher = F.normalize(batch["teacher_emb"].to(device, non_blocking=True).float(), dim=1)
+            else:
+                assert teacher is not None
+                with torch.no_grad():
+                    z_teacher = teacher(x_clean, kpts_norm)
             z_clean, norm_clean = student(x_clean)
             z_dark, norm_dark = student(x_dark)
 
@@ -207,6 +303,7 @@ def _build_train_dataset(cfg: Dict[str, Any]):
     scale_jit = float(data_cfg.get("scale_jitter", 0.04))
     angle_jit = float(data_cfg.get("angle_jitter_deg", 4.0))
     manifest_or_dir = Path(data_cfg["train_manifest"])
+    teacher_embs_p = data_cfg.get("teacher_embs_path")
 
     if data_cfg.get("dataset_type") == "blob" or manifest_or_dir.is_dir():
         return IndexedBlobRecognitionDataset(
@@ -218,6 +315,7 @@ def _build_train_dataset(cfg: Dict[str, Any]):
             clean_jitter_sigma=float(data_cfg.get("clean_jitter_sigma", 0.0)),
             augment=True,
             seed=int(cfg.get("seed", 42)),
+            teacher_embs_path=Path(teacher_embs_p) if teacher_embs_p else None,
         )
     return TwinViewRecognitionDataset(
         manifest_or_dir,
@@ -258,12 +356,17 @@ def main() -> None:
             student.load_state_dict(ck.get("ema", ck.get("model", ck)))
     student = student.to(device)
 
-    teacher = CVLfaceTeacherWrapper(
-        model_id_or_path=cfg["teacher"].get("model_id"),
-        hf_endpoint=cfg["teacher"].get("hf_endpoint", "https://hf-mirror.com"),
-        offline_proxy=args.smoke or cfg["teacher"].get("offline_proxy", False),
-    ).to(device)
-    ema = ModelEMA(student, decay=cfg["train"].get("ema_decay", 0.9995))
+    teacher_embs_p = cfg["data"].get("teacher_embs_path")
+    has_precomputed_teacher = bool((not args.smoke) and teacher_embs_p and Path(teacher_embs_p).is_file())
+    if has_precomputed_teacher:
+        print(f"[train] Using precomputed teacher embeddings: {teacher_embs_p}")
+        teacher = None
+    else:
+        teacher = CVLfaceTeacherWrapper(
+            model_id_or_path=cfg["teacher"].get("model_id"),
+            hf_endpoint=cfg["teacher"].get("hf_endpoint", "https://hf-mirror.com"),
+            offline_proxy=args.smoke or cfg["teacher"].get("offline_proxy", False),
+        ).to(device)
 
     num_classes = 16 if args.smoke else int(cfg["data"]["num_classes"])
     criterion = AdaDistillLoss(
@@ -278,13 +381,13 @@ def main() -> None:
     ).to(device)
     degrader = PhysicalLowLightDegrader(mode="recognizer").to(device)
 
-    lr_backbone = float(cfg["train"].get("lr_backbone", 1.5e-4))
-    lr_head = float(cfg["train"].get("lr_head", 5e-4))
-    param_groups = _split_optimizer_param_groups(student, criterion, lr_backbone=lr_backbone, lr_head=lr_head)
-    optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg["train"].get("weight_decay", 5e-4))
-    scaler = get_grad_scaler(device, cfg["train"].get("precision", "fp16"))
-
     if args.smoke:
+        ema = ModelEMA(student, decay=cfg["train"].get("ema_decay", 0.9995))
+        lr_backbone = float(cfg["train"].get("lr_backbone", 1.5e-4))
+        lr_head = float(cfg["train"].get("lr_head", 5e-4))
+        param_groups = _split_optimizer_param_groups(student, criterion, lr_backbone=lr_backbone, lr_head=lr_head)
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg["train"].get("weight_decay", 5e-4))
+        scaler = get_grad_scaler(device, cfg["train"].get("precision", "fp16"))
         ds = SyntheticRecognizerSmokeDataset(n=32, num_classes=num_classes)
         loader = DataLoader(ds, batch_size=8, shuffle=True, num_workers=0)
         res = train_one_epoch_recognizer(
@@ -306,6 +409,26 @@ def main() -> None:
         return
 
     ds = _build_train_dataset(cfg)
+
+    teacher_centers_p = cfg["data"].get("teacher_centers_path")
+    if teacher_centers_p and Path(teacher_centers_p).is_file():
+        tc_np = np.load(str(teacher_centers_p))
+        criterion.load_precomputed_teacher_centers(torch.from_numpy(tc_np))
+        print(f"[train] Loaded precomputed teacher centers from {teacher_centers_p}: shape={tc_np.shape}")
+
+    procrustes_info = align_student_head_procrustes(student, ds, device, teacher=teacher, n_samples=4096)
+    print(f"[train] Step-0 Procrustes: {json.dumps(procrustes_info)}")
+    if procrustes_info.get("applied"):
+        criterion.adaface.batch_mean.fill_(float(procrustes_info["norm_mean"]))
+        criterion.adaface.batch_std.fill_(max(0.5, float(procrustes_info["norm_std"])))
+
+    ema = ModelEMA(student, decay=cfg["train"].get("ema_decay", 0.9995))
+    lr_backbone = float(cfg["train"].get("lr_backbone", 1.5e-4))
+    lr_head = float(cfg["train"].get("lr_head", 5e-4))
+    param_groups = _split_optimizer_param_groups(student, criterion, lr_backbone=lr_backbone, lr_head=lr_head)
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg["train"].get("weight_decay", 5e-4))
+    scaler = get_grad_scaler(device, cfg["train"].get("precision", "fp16"))
+
     num_workers = int(cfg["train"].get("num_workers", 4))
     loader = DataLoader(
         ds,
@@ -323,6 +446,9 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     backup_dir = Path(cfg["train"]["backup_dir"]) if cfg["train"].get("backup_dir") else None
     history_path = run_dir / "history.jsonl"
+
+    with open(history_path, "a", encoding="utf-8") as hf:
+        hf.write(json.dumps({"step0_procrustes": procrustes_info}) + "\n")
 
     eval_dir = args.eval_dir or (Path(cfg["data"]["eval_dir"]) if cfg["data"].get("eval_dir") else None)
     val_caches = None

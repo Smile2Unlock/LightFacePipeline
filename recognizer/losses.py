@@ -143,6 +143,18 @@ class AdaDistillLoss(nn.Module):
         self.register_buffer("teacher_seen", torch.zeros(num_classes, dtype=torch.bool))
 
     @torch.no_grad()
+    def load_precomputed_teacher_centers(self, centers: torch.Tensor) -> None:
+        """Initialize exact teacher centers & PartialFC centers before Epoch 1."""
+        normed = F.normalize(centers.detach().to(self.teacher_centers.device, dtype=self.teacher_centers.dtype), p=2, dim=1)
+        valid = torch.norm(centers.detach(), p=2, dim=1) > 1e-6
+        self.teacher_centers.copy_(normed)
+        self.teacher_seen.copy_(valid.to(self.teacher_seen.device))
+        if self.init_partial_fc_from_teacher:
+            self.partial_fc.centers.data[valid.to(self.partial_fc.centers.device)] = (
+                normed[valid].to(self.partial_fc.centers.dtype) * 0.25
+            )
+
+    @torch.no_grad()
     def update_teacher_centers(self, z_teacher_clean: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """Pure-GPU vectorized EMA update of teacher identity centers without CPU sync."""
         zt = F.normalize(z_teacher_clean.float(), dim=1)

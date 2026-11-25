@@ -34,6 +34,7 @@ class IndexedBlobRecognitionDataset(Dataset):
         clean_jitter_sigma: float = 0.0,
         augment: bool = True,
         seed: int = 42,
+        teacher_embs_path: Optional[Path] = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.blob_path = self.data_dir / "train_images.blob"
@@ -47,8 +48,20 @@ class IndexedBlobRecognitionDataset(Dataset):
         self.clean_jitter_sigma = clean_jitter_sigma
         self.augment = augment
         self.seed = seed
+        self.teacher_embs_path = Path(teacher_embs_path) if teacher_embs_path else None
         self._fd: Optional[int] = None
         self._fd_pid: Optional[int] = None
+        self._t_embs: Optional[np.ndarray] = None
+        self._t_pid: Optional[int] = None
+
+    def _ensure_teacher_mmap(self) -> Optional[np.ndarray]:
+        if self.teacher_embs_path is None or not self.teacher_embs_path.is_file():
+            return None
+        pid = os.getpid()
+        if self._t_embs is None or self._t_pid != pid:
+            self._t_embs = np.load(str(self.teacher_embs_path), mmap_mode="r")
+            self._t_pid = pid
+        return self._t_embs
 
     def _ensure_open(self) -> int:
         pid = os.getpid()
@@ -110,7 +123,8 @@ class IndexedBlobRecognitionDataset(Dataset):
             rgb = cv2.resize(rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
 
         # Synchronized horizontal flip before splitting into clean vs dark views
-        if self.augment and rng.random() < 0.5:
+        flipped = bool(self.augment and rng.random() < 0.5)
+        if flipped:
             rgb = np.ascontiguousarray(rgb[:, ::-1, :])
 
         if self.augment and self.clean_jitter_sigma > 0.0:
@@ -128,12 +142,17 @@ class IndexedBlobRecognitionDataset(Dataset):
             dark_src_112 = self._warp_prealigned_reflect(rgb, mild_sigma, 0.01, 1.0, rng)
 
         kpts_norm = (ARCFACE_DST_112 / 112.0).astype(np.float32)
-        return {
+        item: Dict[str, Any] = {
             "clean_u8": torch.from_numpy(np.ascontiguousarray(clean_112.transpose(2, 0, 1))),
             "dark_src_u8": torch.from_numpy(np.ascontiguousarray(dark_src_112.transpose(2, 0, 1))),
             "kpts_norm": torch.from_numpy(kpts_norm),
             "label": torch.tensor(int(self.labels[idx]), dtype=torch.long),
         }
+        t_embs = self._ensure_teacher_mmap()
+        if t_embs is not None:
+            flip_idx = 1 if flipped else 0
+            item["teacher_emb"] = torch.from_numpy(np.array(t_embs[idx, flip_idx], dtype=np.float32))
+        return item
 
 
 class TwinViewRecognitionDataset(Dataset):

@@ -12,8 +12,8 @@ teacher:
 train:
   precision: fp16
   sdpa_backend: flash_attention
-  batch_size_pairs: 128
-  grad_accum: 4
+  batch_size_pairs: 256
+  grad_accum: 2
   num_workers: 4
   epochs: 8
   lr_backbone: 0.00015
@@ -34,8 +34,10 @@ loss:
 
 data:
   dataset_type: blob
-  num_classes: 50000
+  num_classes: 40000
   train_manifest: datasets/webface4m_local
+  teacher_embs_path: datasets/webface4m_local/teacher_embs_fp16.npy
+  teacher_centers_path: datasets/webface4m_local/teacher_centers_fp32.npy
   eval_dir: datasets/rec_eval
   kpt_jitter_sigma_range: [1.2, 2.5]
   scale_jitter: 0.04

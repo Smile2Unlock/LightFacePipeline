@@ -14,7 +14,11 @@ from recognizer.edgeface import EdgeFaceS, EdgeFaceXS, OfficialEdgeFace
 from recognizer.eval_rec import evaluate_clean_to_dark_pairs
 from recognizer.losses import AdaDistillLoss
 from recognizer.teacher_cvlface import CVLfaceTeacherWrapper
-from recognizer.train import set_recognizer_warmup_trainable, train_one_epoch_recognizer
+from recognizer.train import (
+    align_student_head_procrustes,
+    set_recognizer_warmup_trainable,
+    train_one_epoch_recognizer,
+)
 
 
 def test_edgeface_param_counts_and_outputs() -> None:
@@ -98,4 +102,43 @@ def test_official_edgeface_onnx_and_vectorized_adadistill(tmp_path) -> None:
     out = crit(zc, nc, zd, nd, zt, labels)
     assert crit.teacher_seen[:6].all() and not crit.teacher_seen[6:].any()
     assert all(torch.isfinite(v) for v in out.values())
+
+
+def test_procrustes_alignment_and_precomputed_centers() -> None:
+    device = get_device()
+    model = OfficialEdgeFace("edgeface_s_gamma_05", emb_dim=512).to(device).eval()
+    ds = SyntheticRecognizerSmokeDataset(n=128, num_classes=16)
+
+    # Synthetic orthogonal rotation as proxy teacher mapping
+    rng = np.random.default_rng(7)
+    q_np, _ = np.linalg.qr(rng.normal(size=(512, 512)).astype(np.float32))
+    q_mat = torch.from_numpy(q_np.astype(np.float32)).to(device)
+
+    class _RotProxyTeacher(torch.nn.Module):
+        def __init__(self, ref_model: OfficialEdgeFace, rot: torch.Tensor) -> None:
+            super().__init__()
+            self.ref = ref_model
+            self.rot = rot
+
+        @torch.no_grad()
+        def forward(self, x_clean: torch.Tensor, kpts: torch.Tensor | None = None) -> torch.Tensor:
+            z, _ = self.ref(x_clean)
+            return torch.nn.functional.normalize(z @ self.rot, dim=1)
+
+    teacher = _RotProxyTeacher(model, q_mat).to(device).eval()
+    # Freeze a detached snapshot reference for teacher before model weights are rotated in-place
+    import copy
+
+    ref_copy = copy.deepcopy(model).to(device).eval()
+    teacher.ref = ref_copy
+
+    res = align_student_head_procrustes(model, ds, device, teacher=teacher, n_samples=128, batch_size=64)
+    assert res["applied"], f"Procrustes failed: {res}"
+    assert res["max_pair_cos_diff"] < 1e-5, f"Pairwise cosine changed: {res['max_pair_cos_diff']}"
+    assert res["cos_teacher_after"] > 0.70, f"Unexpected low Procrustes cosine: {res}"
+
+    crit = AdaDistillLoss(num_classes=16, partial_fc_rate=0.5).to(device)
+    raw_ctrs = torch.nn.functional.normalize(torch.randn(16, 512), dim=1)
+    crit.load_precomputed_teacher_centers(raw_ctrs)
+    assert crit.teacher_seen.all()
 
