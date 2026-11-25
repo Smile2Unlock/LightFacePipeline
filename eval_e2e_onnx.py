@@ -77,6 +77,7 @@ def verify_pytorch_vs_onnx(
     onnx_path: Path,
     inputs: Dict[str, np.ndarray],
     tol: float = 1e-4,
+    rtol: float = 1e-6,
 ) -> Dict[str, Any]:
     pt_model.eval().cpu()
     with torch.no_grad():
@@ -89,13 +90,18 @@ def verify_pytorch_vs_onnx(
     sess = _ort_session(onnx_path, intra_threads=1)
     ort_np = sess.run(None, inputs)
     diffs = [float(np.max(np.abs(a - b))) for a, b in zip(pt_np, ort_np)]
+    rel_diffs = [float(np.max(np.abs(a - b) / np.maximum(np.abs(a), 1.0))) for a, b in zip(pt_np, ort_np)]
     max_diff = max(diffs)
+    max_rel_diff = max(rel_diffs)
+    passed = all(bool(np.allclose(a, b, rtol=rtol, atol=tol)) for a, b in zip(pt_np, ort_np))
     return {
         "model": onnx_path.name,
         "size_mb": round(onnx_path.stat().st_size / (1024 ** 2), 3),
         "sha256": sha256_file(onnx_path),
         "max_abs_diff": max_diff,
-        "passed": max_diff < tol,
+        "max_rel_diff": max_rel_diff,
+        "per_output_max_abs_diff": diffs,
+        "passed": passed,
     }
 
 

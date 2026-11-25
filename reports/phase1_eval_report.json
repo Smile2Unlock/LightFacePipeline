@@ -1,0 +1,374 @@
+{
+  "clean_baseline_v2": {
+    "checkpoint": "/home/ation_ciger/Projects/LightFacePipeline/runs/detector_yolo11n_5pt_lcf/clean_baseline_v2/best.pt",
+    "arch": "lcf_yolo11n_5pt",
+    "darkface_val_1000": {
+      "detections": "raw_native",
+      "images": 1000,
+      "gt_faces": 8247,
+      "pred_boxes": 8680,
+      "matched_iou50": 1177,
+      "recall_iou50": 0.14271856432642174,
+      "precision_iou50": 0.1355990783410138,
+      "AP50_VOC_greedy": 0.08475485142690861,
+      "AP50_official_tools_style": 0.08466520178892563,
+      "zero_detection_images": 4,
+      "multi_detection_images": 970,
+      "exactly_one_face_images": 0,
+      "empty_frame_fppi": 0.0,
+      "face_luma_groups": {
+        "<24": {
+          "faces": 6244,
+          "matched": 551,
+          "recall": 0.08824471492632928
+        },
+        "24-40": {
+          "faces": 746,
+          "matched": 124,
+          "recall": 0.16621983914209115
+        },
+        "64-96": {
+          "faces": 366,
+          "matched": 243,
+          "recall": 0.6639344262295082
+        },
+        "40-64": {
+          "faces": 852,
+          "matched": 251,
+          "recall": 0.29460093896713613
+        },
+        ">=96": {
+          "faces": 39,
+          "matched": 8,
+          "recall": 0.20512820512820512
+        }
+      },
+      "face_height_groups": {
+        "24-40": {
+          "faces": 970,
+          "matched": 427,
+          "recall": 0.4402061855670103
+        },
+        "40-64": {
+          "faces": 306,
+          "matched": 132,
+          "recall": 0.43137254901960786
+        },
+        "<24": {
+          "faces": 6875,
+          "matched": 572,
+          "recall": 0.0832
+        },
+        "64-96": {
+          "faces": 77,
+          "matched": 37,
+          "recall": 0.4805194805194805
+        },
+        ">=96": {
+          "faces": 19,
+          "matched": 9,
+          "recall": 0.47368421052631576
+        }
+      },
+      "frame_luma_groups": {
+        "<24": {
+          "gt_faces": 6464,
+          "matched": 562,
+          "recall": 0.08694306930693069
+        },
+        "40-64": {
+          "gt_faces": 734,
+          "matched": 296,
+          "recall": 0.4032697547683924
+        },
+        "24-40": {
+          "gt_faces": 1049,
+          "matched": 319,
+          "recall": 0.30409914204003813
+        }
+      }
+    },
+    "wider_val": {
+      "images": 3226,
+      "AP50_easy": 0.96249,
+      "AP50_medium": 0.88435,
+      "AP50_hard": 0.57248,
+      "AP50_all": 0.56464,
+      "multi_face_gt_images": 2104,
+      "multi_face_ge2_detected_rate": 0.8527
+    },
+    "wflw_test_5pt": {
+      "total_images": 2481,
+      "clean_matched": 2477,
+      "clean_recall": 0.9984,
+      "clean_nme_5pt": 0.06831,
+      "clean_nme_median": 0.0497,
+      "dark_matched": 2470,
+      "dark_recall": 0.9956,
+      "dark_nme_5pt": 0.07972,
+      "dark_nme_median": 0.05523
+    },
+    "coco_dark_fppi": {
+      "images": 300,
+      "op_thresh": 0.45,
+      "total_false_positives": 22,
+      "images_with_fp": 19,
+      "fppi": 0.07333
+    },
+    "coco_dark_fppi_035": {
+      "images": 300,
+      "op_thresh": 0.35,
+      "total_false_positives": 47,
+      "images_with_fp": 42,
+      "fppi": 0.15667
+    }
+  },
+  "stage1_v2": {
+    "checkpoint": "/home/ation_ciger/Projects/LightFacePipeline/runs/detector_yolo11n_5pt_lcf/stage1_v2/best.pt",
+    "arch": "lcf_yolo11n_5pt",
+    "darkface_val_1000": {
+      "detections": "raw_native",
+      "images": 1000,
+      "gt_faces": 8247,
+      "pred_boxes": 13130,
+      "matched_iou50": 3892,
+      "recall_iou50": 0.4719291863708015,
+      "precision_iou50": 0.29642041127189644,
+      "AP50_VOC_greedy": 0.368903492546099,
+      "AP50_official_tools_style": 0.3686622547835131,
+      "zero_detection_images": 4,
+      "multi_detection_images": 988,
+      "exactly_one_face_images": 3,
+      "empty_frame_fppi": 0.0,
+      "face_luma_groups": {
+        "<24": {
+          "faces": 6244,
+          "matched": 2804,
+          "recall": 0.44907110826393337
+        },
+        "24-40": {
+          "faces": 746,
+          "matched": 266,
+          "recall": 0.35656836461126007
+        },
+        "64-96": {
+          "faces": 366,
+          "matched": 289,
+          "recall": 0.7896174863387978
+        },
+        "40-64": {
+          "faces": 852,
+          "matched": 521,
+          "recall": 0.6115023474178404
+        },
+        ">=96": {
+          "faces": 39,
+          "matched": 12,
+          "recall": 0.3076923076923077
+        }
+      },
+      "face_height_groups": {
+        "24-40": {
+          "faces": 970,
+          "matched": 791,
+          "recall": 0.8154639175257732
+        },
+        "40-64": {
+          "faces": 306,
+          "matched": 265,
+          "recall": 0.8660130718954249
+        },
+        "<24": {
+          "faces": 6875,
+          "matched": 2749,
+          "recall": 0.39985454545454546
+        },
+        "64-96": {
+          "faces": 77,
+          "matched": 69,
+          "recall": 0.8961038961038961
+        },
+        ">=96": {
+          "faces": 19,
+          "matched": 18,
+          "recall": 0.9473684210526315
+        }
+      },
+      "frame_luma_groups": {
+        "<24": {
+          "gt_faces": 6464,
+          "matched": 2826,
+          "recall": 0.43719059405940597
+        },
+        "40-64": {
+          "gt_faces": 734,
+          "matched": 488,
+          "recall": 0.6648501362397821
+        },
+        "24-40": {
+          "gt_faces": 1049,
+          "matched": 578,
+          "recall": 0.5510009532888466
+        }
+      }
+    },
+    "wider_val": {
+      "images": 3226,
+      "AP50_easy": 0.96201,
+      "AP50_medium": 0.87856,
+      "AP50_hard": 0.56953,
+      "AP50_all": 0.56194,
+      "multi_face_gt_images": 2104,
+      "multi_face_ge2_detected_rate": 0.8455
+    },
+    "wflw_test_5pt": {
+      "total_images": 2481,
+      "clean_matched": 2480,
+      "clean_recall": 0.9996,
+      "clean_nme_5pt": 0.06562,
+      "clean_nme_median": 0.04708,
+      "dark_matched": 2479,
+      "dark_recall": 0.9992,
+      "dark_nme_5pt": 0.06781,
+      "dark_nme_median": 0.04948
+    },
+    "coco_dark_fppi": {
+      "images": 300,
+      "op_thresh": 0.45,
+      "total_false_positives": 7,
+      "images_with_fp": 7,
+      "fppi": 0.02333
+    },
+    "coco_dark_fppi_035": {
+      "images": 300,
+      "op_thresh": 0.35,
+      "total_false_positives": 10,
+      "images_with_fp": 9,
+      "fppi": 0.03333
+    }
+  },
+  "stage2_v2": {
+    "checkpoint": "/home/ation_ciger/Projects/LightFacePipeline/runs/detector_yolo11n_5pt_lcf/stage2_v2/best.pt",
+    "arch": "lcf_yolo11n_5pt",
+    "darkface_val_1000": {
+      "detections": "raw_native",
+      "images": 1000,
+      "gt_faces": 8247,
+      "pred_boxes": 13012,
+      "matched_iou50": 3911,
+      "recall_iou50": 0.47423305444404024,
+      "precision_iou50": 0.30056870581002154,
+      "AP50_VOC_greedy": 0.37156375514673556,
+      "AP50_official_tools_style": 0.3713265061981314,
+      "zero_detection_images": 3,
+      "multi_detection_images": 987,
+      "exactly_one_face_images": 3,
+      "empty_frame_fppi": 0.0,
+      "face_luma_groups": {
+        "<24": {
+          "faces": 6244,
+          "matched": 2832,
+          "recall": 0.4535554131966688
+        },
+        "24-40": {
+          "faces": 746,
+          "matched": 262,
+          "recall": 0.3512064343163539
+        },
+        "64-96": {
+          "faces": 366,
+          "matched": 287,
+          "recall": 0.7841530054644809
+        },
+        "40-64": {
+          "faces": 852,
+          "matched": 518,
+          "recall": 0.607981220657277
+        },
+        ">=96": {
+          "faces": 39,
+          "matched": 12,
+          "recall": 0.3076923076923077
+        }
+      },
+      "face_height_groups": {
+        "24-40": {
+          "faces": 970,
+          "matched": 788,
+          "recall": 0.8123711340206186
+        },
+        "40-64": {
+          "faces": 306,
+          "matched": 266,
+          "recall": 0.869281045751634
+        },
+        "<24": {
+          "faces": 6875,
+          "matched": 2771,
+          "recall": 0.40305454545454544
+        },
+        "64-96": {
+          "faces": 77,
+          "matched": 69,
+          "recall": 0.8961038961038961
+        },
+        ">=96": {
+          "faces": 19,
+          "matched": 17,
+          "recall": 0.8947368421052632
+        }
+      },
+      "frame_luma_groups": {
+        "<24": {
+          "gt_faces": 6464,
+          "matched": 2853,
+          "recall": 0.44136757425742573
+        },
+        "40-64": {
+          "gt_faces": 734,
+          "matched": 481,
+          "recall": 0.6553133514986376
+        },
+        "24-40": {
+          "gt_faces": 1049,
+          "matched": 577,
+          "recall": 0.550047664442326
+        }
+      }
+    },
+    "wider_val": {
+      "images": 3226,
+      "AP50_easy": 0.96,
+      "AP50_medium": 0.87572,
+      "AP50_hard": 0.56259,
+      "AP50_all": 0.55508,
+      "multi_face_gt_images": 2104,
+      "multi_face_ge2_detected_rate": 0.8085
+    },
+    "wflw_test_5pt": {
+      "total_images": 2481,
+      "clean_matched": 2480,
+      "clean_recall": 0.9996,
+      "clean_nme_5pt": 0.06428,
+      "clean_nme_median": 0.04657,
+      "dark_matched": 2479,
+      "dark_recall": 0.9992,
+      "dark_nme_5pt": 0.06724,
+      "dark_nme_median": 0.04897
+    },
+    "coco_dark_fppi": {
+      "images": 300,
+      "op_thresh": 0.45,
+      "total_false_positives": 6,
+      "images_with_fp": 6,
+      "fppi": 0.02
+    },
+    "coco_dark_fppi_035": {
+      "images": 300,
+      "op_thresh": 0.35,
+      "total_false_positives": 8,
+      "images_with_fp": 8,
+      "fppi": 0.02667
+    }
+  }
+}
