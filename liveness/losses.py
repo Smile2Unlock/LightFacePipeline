@@ -106,15 +106,16 @@ class FASCombinedLoss(nn.Module):
 
     def __init__(
         self,
-        w_depth: float = 0.5,
-        w_clarity: float = 0.3,
+        w_depth: float = 0.3,
+        w_clarity: float = 0.2,
         w_kd_logits: float = 0.5,
-        w_patch_kd: float = 0.3,
-        w_ssdg: float = 0.2,
-        kd_temp: float = 2.0,
+        w_patch_kd: float = 0.2,
+        w_ssdg: float = 0.1,
+        kd_temp: float = 1.5,
+        focal_gamma: float = 1.0,
     ) -> None:
         super().__init__()
-        self.focal = FocalCrossEntropyLoss(gamma=2.0)
+        self.focal = FocalCrossEntropyLoss(gamma=focal_gamma)
         self.ssdg = SSDGSingleSideDomainLoss()
         self.patch_kd = PatchAffinityKDLoss()
         self.w_depth = w_depth
@@ -148,16 +149,16 @@ class FASCombinedLoss(nn.Module):
         l_kd = l_ce.new_zeros(())
         l_patch = l_ce.new_zeros(())
         if teacher_out is not None:
-            # Binary Live-vs-Spoof distillation (valid for all fine_known=True/False clips without subtype noise)
+            # Binary Live-vs-Spoof distillation (clean signal across all fine_known=True/False clips)
             s_bin = _binary_live_logit(stu_out["spoof_logits"]) / self.kd_temp
             t_bin_prob = torch.sigmoid(_binary_live_logit(teacher_out["logits"].detach()) / self.kd_temp)
-            l_kd = F.binary_cross_entropy_with_logits(s_bin, t_bin_prob) * (self.kd_temp ** 2)
+            l_kd = F.binary_cross_entropy_with_logits(s_bin, t_bin_prob) * self.kd_temp
 
             if fine_known is None or bool(fine_known.any().item()):
                 mask = fine_known if fine_known is not None else torch.ones_like(labels, dtype=torch.bool)
                 s_log5 = F.log_softmax(stu_out["spoof_logits"][mask].float() / self.kd_temp, dim=-1)
                 t_prob5 = F.softmax(teacher_out["logits"][mask].detach().float() / self.kd_temp, dim=-1)
-                l_kd = l_kd + 0.25 * F.kl_div(s_log5, t_prob5, reduction="batchmean") * (self.kd_temp ** 2)
+                l_kd = l_kd + 0.15 * F.kl_div(s_log5, t_prob5, reduction="batchmean") * self.kd_temp
 
             # Match DINOv2 (run on 2.7x ctx FOV) against Student 2.7x ctx_fmap
             fmap_kd = stu_out.get("ctx_fmap", stu_out["tex_fmap"])

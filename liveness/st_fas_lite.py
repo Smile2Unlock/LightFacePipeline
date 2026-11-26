@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Tuple
 
+import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -84,24 +85,64 @@ class ConvNeXtV2LiteBranch(nn.Module):
         return vec, fmap
 
 
-class STFASSpatialEncoder(nn.Module):
-    """Single-frame dual-scale spatial encoder (`tex_curr, tex_prev, ctx_curr -> spatial_feat, quality, fmap`)."""
+def _adapt_conv_stem_9ch(branch: nn.Module) -> None:
+    """Expand a 3-channel MobileNetV3 conv_stem to 9 channels while preserving pretrained RGB filters."""
+    old = branch.conv_stem
+    new_conv = nn.Conv2d(
+        9,
+        old.out_channels,
+        kernel_size=old.kernel_size,
+        stride=old.stride,
+        padding=old.padding,
+        bias=(old.bias is not None),
+    )
+    with torch.no_grad():
+        new_conv.weight[:, :3].copy_(old.weight)
+        mean_k = old.weight.mean(dim=1, keepdim=True) * 0.05
+        new_conv.weight[:, 3:9].copy_(mean_k.repeat(1, 6, 1, 1))
+        if old.bias is not None and new_conv.bias is not None:
+            new_conv.bias.copy_(old.bias)
+    branch.conv_stem = new_conv
 
-    def __init__(self, feat_dim: int = 192) -> None:
+
+class STFASSpatialEncoder(nn.Module):
+    """Single-frame dual-scale spatial encoder (`tex_curr, tex_prev, ctx_curr -> spatial_feat, quality`)."""
+
+    def __init__(
+        self,
+        feat_dim: int = 192,
+        backbone: str = "mobilenetv3_dual",
+        pretrained: bool = False,
+    ) -> None:
         super().__init__()
         self.feat_dim = feat_dim
+        self.backbone = backbone
         self.cdc = CDC2d(3, 3, theta=0.7)
 
         self.register_buffer("im_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("im_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1), persistent=False)
 
-        # 1.5x Texture branch: [norm_RGB_t(3), |tex_curr - tex_prev|(3), CDC(tex_curr)(3)] = 9ch
-        self.tex_branch = ConvNeXtV2LiteBranch(in_ch=9, dims=(40, 80, 144), depths=(1, 2, 2))
-        # 2.7x Context branch (0.5x width): [norm_RGB_t(3)] = 3ch
-        self.ctx_branch = ConvNeXtV2LiteBranch(in_ch=3, dims=(20, 40, 72), depths=(1, 1, 1))
+        if backbone == "mobilenetv3_dual":
+            # ImageNet-pretrained MobileNetV3-Small dual branches (~2.7 MB spatial + 2.3 MB temporal <= 6.0 MB)
+            self.tex_branch = timm.create_model(
+                "mobilenetv3_small_050", pretrained=pretrained, features_only=True, out_indices=(3, 4)
+            )
+            _adapt_conv_stem_9ch(self.tex_branch)
+            self.ctx_branch = timm.create_model(
+                "mobilenetv3_small_050", pretrained=pretrained, features_only=True, out_indices=(3, 4)
+            )
+            tex_dim, ctx_dim, tex_map_ch = 288, 288, 24
+        elif backbone == "convnextv2_lite":
+            # 1.5x Texture branch: [norm_RGB_t(3), |tex_curr - tex_prev|(3), CDC(tex_curr)(3)] = 9ch
+            self.tex_branch = ConvNeXtV2LiteBranch(in_ch=9, dims=(40, 80, 144), depths=(1, 2, 2))
+            # 2.7x Context branch (0.5x width): [norm_RGB_t(3)] = 3ch
+            self.ctx_branch = ConvNeXtV2LiteBranch(in_ch=3, dims=(20, 40, 72), depths=(1, 1, 1))
+            tex_dim, ctx_dim, tex_map_ch = 144, 72, 144
+        else:
+            raise ValueError(f"Unsupported ST-FAS-Lite backbone: {backbone}")
 
         self.fusion = nn.Sequential(
-            nn.Linear(144 + 72, feat_dim),
+            nn.Linear(tex_dim + ctx_dim, feat_dim),
             nn.LayerNorm(feat_dim),
             nn.GELU(),
         )
@@ -113,14 +154,37 @@ class STFASSpatialEncoder(nn.Module):
         )
         # Train-only Pseudo-3D depth map head (automatically excluded in ONNX deploy wrappers)
         self.depth_head = nn.Sequential(
-            nn.Conv2d(144, 48, kernel_size=3, padding=1),
+            nn.Conv2d(tex_map_ch, 32, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.Conv2d(48, 1, kernel_size=1),
+            nn.Conv2d(32, 1, kernel_size=1),
             nn.Sigmoid(),
         )
 
     def _norm_rgb(self, x: torch.Tensor) -> torch.Tensor:
         return (x - self.im_mean.to(device=x.device, dtype=x.dtype)) / self.im_std.to(device=x.device, dtype=x.dtype)
+
+    def _encode_branches(
+        self,
+        tex_curr: torch.Tensor,
+        tex_prev: torch.Tensor,
+        ctx_curr: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        tex_norm = self._norm_rgb(tex_curr)
+        ctx_norm = self._norm_rgb(ctx_curr)
+        diff = torch.abs(tex_curr - tex_prev)
+        cdc_hi = self.cdc(tex_curr)
+        tex_in = torch.cat((tex_norm, diff, cdc_hi), dim=1)
+
+        if self.backbone == "mobilenetv3_dual":
+            t_outs = self.tex_branch(tex_in)
+            c_outs = self.ctx_branch(ctx_norm)
+            fmap_tex, fmap_ctx = t_outs[0], c_outs[0]
+            v_tex = t_outs[1].mean(dim=(-2, -1))
+            v_ctx = c_outs[1].mean(dim=(-2, -1))
+        else:
+            v_tex, fmap_tex = self.tex_branch(tex_in)
+            v_ctx, fmap_ctx = self.ctx_branch(ctx_norm)
+        return v_tex, v_ctx, fmap_tex, fmap_ctx
 
     def forward_train(
         self,
@@ -128,15 +192,7 @@ class STFASSpatialEncoder(nn.Module):
         tex_prev: torch.Tensor,
         ctx_curr: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        tex_norm = self._norm_rgb(tex_curr)
-        ctx_norm = self._norm_rgb(ctx_curr)
-        diff = torch.abs(tex_curr - tex_prev)
-        cdc_hi = self.cdc(tex_curr)
-        tex_in = torch.cat((tex_norm, diff, cdc_hi), dim=1)
-
-        v_tex, fmap_tex = self.tex_branch(tex_in)
-        v_ctx, fmap_ctx = self.ctx_branch(ctx_norm)
-
+        v_tex, v_ctx, fmap_tex, fmap_ctx = self._encode_branches(tex_curr, tex_prev, ctx_curr)
         feat = self.fusion(torch.cat((v_tex, v_ctx), dim=-1))
         quality_logit = self.quality_head(feat)
         depth_map = self.depth_head(fmap_tex)
@@ -149,14 +205,7 @@ class STFASSpatialEncoder(nn.Module):
         ctx_curr: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Deployment forward (prunes depth head & dense fmap)."""
-        tex_norm = self._norm_rgb(tex_curr)
-        ctx_norm = self._norm_rgb(ctx_curr)
-        diff = torch.abs(tex_curr - tex_prev)
-        cdc_hi = self.cdc(tex_curr)
-        tex_in = torch.cat((tex_norm, diff, cdc_hi), dim=1)
-
-        v_tex, _ = self.tex_branch(tex_in)
-        v_ctx, _ = self.ctx_branch(ctx_norm)
+        v_tex, v_ctx, _, _ = self._encode_branches(tex_curr, tex_prev, ctx_curr)
         feat = self.fusion(torch.cat((v_tex, v_ctx), dim=-1))
         quality_logit = self.quality_head(feat)
         return feat, quality_logit
@@ -235,11 +284,19 @@ class STFASTemporalHead(nn.Module):
 class STFASLiteClip(nn.Module):
     """Full clip ST-FAS-Lite composing the exact `STFASSpatialEncoder` + `STFASTemporalHead`."""
 
-    def __init__(self, feat_dim: int = 192, clip_len: int = 8, num_classes: int = 5) -> None:
+    def __init__(
+        self,
+        feat_dim: int = 192,
+        clip_len: int = 8,
+        num_classes: int = 5,
+        backbone: str = "mobilenetv3_dual",
+        pretrained: bool = False,
+    ) -> None:
         super().__init__()
         self.feat_dim = feat_dim
         self.clip_len = clip_len
-        self.spatial_enc = STFASSpatialEncoder(feat_dim=feat_dim)
+        self.backbone = backbone
+        self.spatial_enc = STFASSpatialEncoder(feat_dim=feat_dim, backbone=backbone, pretrained=pretrained)
         self.temporal_head = STFASTemporalHead(feat_dim=feat_dim, clip_len=clip_len, num_classes=num_classes)
 
     def forward_train(

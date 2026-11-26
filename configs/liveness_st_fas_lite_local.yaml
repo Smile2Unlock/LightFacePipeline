@@ -1,6 +1,7 @@
 seed: 42
 model:
   arch: st_fas_lite
+  backbone: mobilenetv3_dual
   feat_dim: 192
   clip_len: 8
   num_classes: 5
@@ -32,11 +33,12 @@ teacher_stage:
 
 student_stage:
   batch_size_clips: 8
-  grad_accum: 1
-  epochs: 15
-  lr: 0.0012
+  grad_accum: 2
+  epochs: 12
+  lr: 0.001
+  backbone_lr: 0.0003
   ema_decay: 0.99
-  ema_warmup_tau: 50.0
+  ema_warmup_tau: 40.0
   samples_per_epoch: 1600
   val_max_batches: null
 

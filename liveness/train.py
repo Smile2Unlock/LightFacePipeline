@@ -175,11 +175,13 @@ def train_one_epoch_liveness(
     scheduler: Optional[Any] = None,
     p_normal: float = 0.30,
     p_frozen: float = 0.20,
+    student_precision: Optional[str] = None,
 ) -> Dict[str, Any]:
+    stu_prec = student_precision or precision
     student.train()
     if teacher is not None:
         teacher.eval()
-    scaler = scaler or get_grad_scaler(device, precision)
+    scaler = scaler or get_grad_scaler(device, stu_prec)
 
     stats = {"loss": 0.0, "ce_loss": 0.0, "depth_loss": 0.0, "clarity_loss": 0.0, "kd_loss": 0.0, "patch_kd_loss": 0.0}
     live_luma_samples: List[np.ndarray] = []
@@ -213,12 +215,12 @@ def train_one_epoch_liveness(
                 spoof_luma_samples.append(tex[sm].detach().cpu().numpy())
 
         with get_sdpa_context(sdpa_backend):
-            with get_amp_autocast(device, precision):
+            with get_amp_autocast(device, stu_prec):
                 stu_out = student.forward_train(tex, ctx)
-                teacher_out = None
-                if teacher is not None:
-                    with torch.no_grad():
-                        teacher_out = teacher(tex, ctx)
+            teacher_out = None
+            if teacher is not None:
+                with torch.no_grad(), get_amp_autocast(device, precision):
+                    teacher_out = teacher(tex, ctx)
 
             loss_dict = criterion(
                 stu_out,
@@ -564,17 +566,26 @@ def main() -> None:
         feat_dim=cfg["model"].get("feat_dim", 192),
         clip_len=cfg["model"].get("clip_len", 8),
         num_classes=cfg["model"].get("num_classes", 5),
+        backbone=cfg["model"].get("backbone", "mobilenetv3_dual"),
+        pretrained=True,
     ).to(device)
     ema = ModelEMA(
         student,
         decay=float(st_cfg.get("ema_decay", 0.99)),
-        warmup_tau=float(st_cfg.get("ema_warmup_tau", 50.0)),
+        warmup_tau=float(st_cfg.get("ema_warmup_tau", 40.0)),
     )
     criterion = FASCombinedLoss().to(device)
+    stu_lr = float(st_cfg.get("lr", 1e-3))
+    bb_lr = float(st_cfg.get("backbone_lr", stu_lr * 0.3))
+    bb_params, head_params = [], []
+    for name, p in student.named_parameters():
+        if name.startswith(("spatial_enc.tex_branch.", "spatial_enc.ctx_branch.")):
+            bb_params.append(p)
+        else:
+            head_params.append(p)
     optimizer = torch.optim.AdamW(
-        student.parameters(),
-        lr=float(st_cfg.get("lr", 1.5e-3)),
-        weight_decay=float(train_cfg.get("weight_decay", 1e-4)),
+        [{"params": bb_params, "lr": bb_lr}, {"params": head_params, "lr": stu_lr}],
+        weight_decay=float(train_cfg.get("weight_decay", 1e-2)),
     )
 
     sampler = train_ds.build_balanced_sampler(num_samples=n_samples, balance_domains=True)
@@ -595,7 +606,8 @@ def main() -> None:
     )
     opt_steps_per_epoch = max(1, math.ceil(min(len(loader), args.max_steps or len(loader)) / max(ga, 1)))
     scheduler = _make_warmup_cosine(optimizer, total_steps=opt_steps_per_epoch * epochs, warmup_steps=min(40, opt_steps_per_epoch))
-    scaler = get_grad_scaler(device, precision)
+    stu_prec = str(st_cfg.get("student_precision", "fp32"))
+    scaler = get_grad_scaler(device, stu_prec)
     best_score = (-1.0, -1.0)
     history_path = run_dir / "history.jsonl"
 
@@ -617,6 +629,7 @@ def main() -> None:
             p_normal=p_normal,
             p_frozen=p_frozen,
             max_steps=args.max_steps,
+            student_precision=stu_prec,
         )
         if device.type == "cuda":
             torch.cuda.empty_cache()
