@@ -39,6 +39,7 @@ class DualStreamDINOv2Teacher(nn.Module):
         num_classes: int = 5,
         offline_config_only: bool = False,
         clip_len: int = 8,
+        enable_grad_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.register_buffer("im_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1), persistent=False)
@@ -63,6 +64,12 @@ class DualStreamDINOv2Teacher(nn.Module):
             base_vit = Dinov2WithRegistersModel.from_pretrained(target)
             self.vit_input_size = int(getattr(base_vit.config, "image_size", 224))
 
+        if enable_grad_checkpointing and hasattr(base_vit, "gradient_checkpointing_enable"):
+            try:
+                base_vit.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            except TypeError:
+                base_vit.gradient_checkpointing_enable()
+
         linear_leaf_names = {
             name.split(".")[-1]
             for name, mod in base_vit.named_modules()
@@ -77,6 +84,8 @@ class DualStreamDINOv2Teacher(nn.Module):
             bias="none",
         )
         self.vit = get_peft_model(base_vit, lora_cfg)
+        if enable_grad_checkpointing and hasattr(self.vit, "enable_input_require_grads"):
+            self.vit.enable_input_require_grads()
         self.num_reg = int(getattr(self.vit.config, "num_register_tokens", 4))
         vit_dim = int(self.vit.config.hidden_size)
 

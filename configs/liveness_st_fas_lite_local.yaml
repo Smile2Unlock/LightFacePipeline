@@ -1,0 +1,45 @@
+seed: 42
+model:
+  arch: st_fas_lite
+  feat_dim: 192
+  clip_len: 8
+  num_classes: 5
+
+teacher:
+  model_id: datasets/pretrained/dinov2_reg_base
+  hf_endpoint: https://hf-mirror.com
+  lora_r: 16
+  offline_config_only: false
+  enable_grad_checkpointing: true
+
+train:
+  precision: fp16
+  sdpa_backend: flash_attention
+  p_normal: 0.30
+  p_frozen: 0.20
+  num_workers: 4
+  weight_decay: 0.0001
+  run_dir: runs/liveness_st_fas_lite_local
+
+teacher_stage:
+  batch_size_clips: 4
+  grad_accum: 8
+  epochs: 12
+  lr: 0.0003
+  hf_lr: 0.0001
+  samples_per_epoch: 3200
+  val_max_batches: 40
+
+student_stage:
+  batch_size_clips: 8
+  grad_accum: 4
+  epochs: 20
+  lr: 0.0015
+  ema_decay: 0.995
+  samples_per_epoch: 4800
+  val_max_batches: 50
+
+data:
+  train_manifest: datasets/manifests/fas_video_clips_train.jsonl
+  val_manifest: datasets/manifests/fas_video_clips_val.jsonl
+  test_manifest: datasets/manifests/fas_video_clips_test.jsonl

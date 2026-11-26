@@ -28,6 +28,8 @@ class VideoClipLivenessDataset(Dataset):
         crop_size: int = FAS_CROP_SIZE,
         box_jitter_frac: float = 0.03,
         scale_jitter_frac: float = 0.02,
+        augment: bool = True,
+        hflip_prob: float = 0.5,
         seed: int = 42,
     ) -> None:
         self.rows: List[Dict[str, Any]] = []
@@ -45,35 +47,72 @@ class VideoClipLivenessDataset(Dataset):
                     self.rows.append(row)
         self.clip_len = clip_len
         self.crop_size = crop_size
-        self.box_jitter_frac = box_jitter_frac
-        self.scale_jitter_frac = scale_jitter_frac
+        self.box_jitter_frac = box_jitter_frac if augment else 0.0
+        self.scale_jitter_frac = scale_jitter_frac if augment else 0.0
+        self.augment = augment
+        self.hflip_prob = hflip_prob if augment else 0.0
         self.seed = seed
 
-    def build_balanced_sampler(self) -> WeightedRandomSampler:
-        """Strictly balance Live (label==0) vs Spoof (label!=0) at 1:1 per batch."""
-        n_live = sum(1 for r in self.rows if int(r["label"]) == 0)
-        n_spoof = len(self.rows) - n_live
-        weights = [
-            0.5 / max(n_live, 1) if int(r["label"]) == 0 else 0.5 / max(n_spoof, 1)
-            for r in self.rows
+    def build_balanced_sampler(
+        self,
+        num_samples: Optional[int] = None,
+        balance_domains: bool = True,
+    ) -> WeightedRandomSampler:
+        """Balance Live (label==0) vs Spoof (label!=0) at 1:1 while balancing across source domains."""
+        n_total = num_samples or len(self.rows)
+        domain_cls_counts: Dict[Tuple[str, int], int] = {}
+        for r in self.rows:
+            src = str(r.get("source", "default"))
+            is_spoof = 0 if int(r["label"]) == 0 else 1
+            domain_cls_counts[(src, is_spoof)] = domain_cls_counts.get((src, is_spoof), 0) + 1
+
+        cls_totals = {0: 0, 1: 0}
+        for (_, is_spoof), cnt in domain_cls_counts.items():
+            cls_totals[is_spoof] += cnt
+
+        weights: List[float] = []
+        for r in self.rows:
+            src = str(r.get("source", "default"))
+            is_spoof = 0 if int(r["label"]) == 0 else 1
+            if balance_domains:
+                # Inverse sqrt domain frequency inside Live/Spoof keeps every source well represented without extreme noise
+                dc = domain_cls_counts[(src, is_spoof)]
+                w = 1.0 / (max(dc, 1) ** 0.75)
+            else:
+                w = 0.5 / max(cls_totals[is_spoof], 1)
+            weights.append(float(w))
+
+        # Re-normalize so sum of Live weights == sum of Spoof weights == 0.5
+        sum_live = sum(w for w, r in zip(weights, self.rows) if int(r["label"]) == 0)
+        sum_spoof = sum(w for w, r in zip(weights, self.rows) if int(r["label"]) != 0)
+        norm_weights = [
+            (0.5 * w / max(sum_live, 1e-12)) if int(r["label"]) == 0 else (0.5 * w / max(sum_spoof, 1e-12))
+            for w, r in zip(weights, self.rows)
         ]
-        return WeightedRandomSampler(weights=weights, num_samples=len(self.rows), replacement=True)
+        return WeightedRandomSampler(weights=norm_weights, num_samples=n_total, replacement=True)
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         row = self.rows[idx]
-        rng = np.random.default_rng(self.seed + idx * 97)
+        # Fresh RNG per call during training so epoch-to-epoch sampling & bbox jitter never repeat identically
+        rng = np.random.default_rng() if self.augment else np.random.default_rng(self.seed + idx * 97)
         frames = row["frame_paths"]
         bboxes = row["bboxes"]
 
-        # Sample T temporally ordered frames (subsampling stride if longer)
-        if len(frames) > self.clip_len:
-            start = int(rng.integers(0, len(frames) - self.clip_len + 1))
-            indices = list(range(start, start + self.clip_len))
+        if self.augment:
+            valid_strides = [s for s in (1, 2, 3) if len(frames) >= 1 + (self.clip_len - 1) * s]
+            stride = int(rng.choice(valid_strides)) if valid_strides else 1
+            span = 1 + (self.clip_len - 1) * stride
+            start = int(rng.integers(0, max(1, len(frames) - span + 1)))
         else:
-            indices = list(range(self.clip_len))
+            stride = min(2, max(1, (len(frames) - 1) // max(self.clip_len - 1, 1)))
+            span = 1 + (self.clip_len - 1) * stride
+            start = max(0, (len(frames) - span) // 2)
+        indices = [start + i * stride for i in range(self.clip_len)]
+
+        do_hflip = bool(self.augment and rng.random() < self.hflip_prob)
 
         tex_list: List[np.ndarray] = []
         ctx_list: List[np.ndarray] = []
@@ -83,7 +122,6 @@ class VideoClipLivenessDataset(Dataset):
                 raise FileNotFoundError(frames[fi])
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             bb = np.asarray(bboxes[fi] if len(bboxes) > 1 else bboxes[0], dtype=np.float32)
-            # Strategy C: inject independent ±2-4% detector bbox jitter per frame
             tex, ctx = crop_dual_scale_fas(
                 rgb,
                 bb,
@@ -92,14 +130,17 @@ class VideoClipLivenessDataset(Dataset):
                 scale_jitter_frac=self.scale_jitter_frac,
                 rng=rng,
             )
+            if do_hflip:
+                tex = tex[:, ::-1, :]
+                ctx = ctx[:, ::-1, :]
             tex_list.append(tex.transpose(2, 0, 1))
             ctx_list.append(ctx.transpose(2, 0, 1))
 
         tex_u8 = np.stack(tex_list, axis=0)  # [T, 3, 128, 128]
         ctx_u8 = np.stack(ctx_list, axis=0)
         label = int(row["label"])
+        fine_known = bool(row.get("fine_label_known", True))
 
-        # Pseudo 3D depth target: 0.0 flat plane for planar spoofs (1=print, 2=replay, 4=frozen), dome for live
         if label == 0:
             yy, xx = np.meshgrid(np.linspace(-1, 1, 8), np.linspace(-1, 1, 8), indexing="ij")
             dome = np.clip(1.0 - (xx ** 2 + yy ** 2), 0.0, 1.0).astype(np.float32) * 0.8
@@ -112,6 +153,9 @@ class VideoClipLivenessDataset(Dataset):
             "ctx_u8": torch.from_numpy(np.ascontiguousarray(ctx_u8)),
             "label": torch.tensor(label, dtype=torch.long),
             "depth_target": torch.from_numpy(depth_target),
+            "fine_known": torch.tensor(fine_known, dtype=torch.bool),
+            "source": str(row.get("source", "unknown")),
+            "attack_group": str(row.get("attack_group", FAS_CLASSES[label] if label < len(FAS_CLASSES) else "spoof")),
         }
 
 

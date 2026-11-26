@@ -2,11 +2,42 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def focal_fine_or_binary_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    fine_known: Optional[torch.Tensor] = None,
+    gamma: float = 2.0,
+) -> torch.Tensor:
+    """5-class Focal CE for fine-labeled samples, binary spoof Focal BCE when subtype is unknown."""
+    logits_f = logits.float()
+    if fine_known is None or bool(fine_known.all().item()):
+        ce = F.cross_entropy(logits_f, targets, reduction="none")
+        pt = torch.exp(-ce)
+        return (((1.0 - pt) ** gamma) * ce).mean()
+
+    known_mask = fine_known | (targets == 0)
+    per_sample = logits_f.new_zeros(targets.shape[0])
+    if known_mask.any():
+        ce = F.cross_entropy(logits_f[known_mask], targets[known_mask], reduction="none")
+        pt = torch.exp(-ce)
+        per_sample[known_mask] = ((1.0 - pt) ** gamma) * ce
+
+    unk_spoof = (~fine_known) & (targets != 0)
+    if unk_spoof.any():
+        probs = F.softmax(logits_f[unk_spoof], dim=-1)
+        p_live = probs[:, 0].clamp(min=1e-6, max=1.0 - 1e-6)
+        p_spoof = (1.0 - p_live).clamp(min=1e-6)
+        bce = -torch.log(p_spoof)
+        per_sample[unk_spoof] = (p_live ** gamma) * bce
+
+    return per_sample.mean()
 
 
 class FocalCrossEntropyLoss(nn.Module):
@@ -14,10 +45,13 @@ class FocalCrossEntropyLoss(nn.Module):
         super().__init__()
         self.gamma = gamma
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        ce = F.cross_entropy(logits.float(), targets, reduction="none")
-        pt = torch.exp(-ce)
-        return (((1.0 - pt) ** self.gamma) * ce).mean()
+    def forward(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        fine_known: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return focal_fine_or_binary_loss(logits, targets, fine_known=fine_known, gamma=self.gamma)
 
 
 class SSDGSingleSideDomainLoss(nn.Module):
@@ -91,8 +125,9 @@ class FASCombinedLoss(nn.Module):
         depth_target: Optional[torch.Tensor] = None,
         clarity_target: Optional[torch.Tensor] = None,
         teacher_out: Optional[Dict[str, torch.Tensor]] = None,
+        fine_known: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        l_ce = self.focal(stu_out["spoof_logits"], labels)
+        l_ce = self.focal(stu_out["spoof_logits"], labels, fine_known=fine_known)
         l_ssdg = self.ssdg(stu_out["pooled_feat"], labels)
 
         # Pseudo-3D depth map supervision: planar spoofs (1,2,4) strictly pushed to 0 plane
@@ -129,3 +164,6 @@ class FASCombinedLoss(nn.Module):
             "patch_kd_loss": l_patch,
             "ssdg_loss": l_ssdg,
         }
+
+
+STFASCompositeLoss = FASCombinedLoss

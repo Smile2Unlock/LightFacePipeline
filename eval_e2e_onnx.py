@@ -261,6 +261,7 @@ def export_and_verify_all(
     rec_ckpt: Optional[Path] = None,
     fas_ckpt: Optional[Path] = None,
     run_cpu_bench: bool = True,
+    thresholds: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     models_dir = out_dir / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -381,6 +382,16 @@ def export_and_verify_all(
         det_ver["size_mb"] + rec_ver["size_mb"] + fas_sp_ver["size_mb"] + fas_tm_ver["size_mb"], 3
     )
 
+    default_th = {
+        "det_score_th": 0.45,
+        "rec_cosine_th": 0.36,
+        "rec_norm_min": 8.0,
+        "liveness_th": 0.50,
+        "clarity_th": 0.35,
+    }
+    if thresholds:
+        default_th.update({k: float(v) for k, v in thresholds.items() if v is not None})
+
     manifest = {
         "color_space": COLOR_SPACE,
         "landmark_order": list(LANDMARK_ORDER),
@@ -389,13 +400,7 @@ def export_and_verify_all(
         "fas_crop_size": FAS_CROP_SIZE,
         "fas_scales": list(FAS_SCALES),
         "fas_classes": list(FAS_CLASSES),
-        "recommended_thresholds": {
-            "det_score_th": 0.45,
-            "rec_cosine_th": 0.36,
-            "rec_norm_min": 8.0,
-            "liveness_th": 0.50,
-            "clarity_th": 0.35,
-        },
+        "recommended_thresholds": default_th,
         "models": {
             "detector": {**det_ver, "input": "rgb_01 [1,3,640,640] in [0,1] (raw unenhanced RGB)"},
             "recognizer": {**rec_ver, "input": "rgb_norm [1,3,112,112] = (rgb/255 - 0.5)/0.5"},
@@ -448,9 +453,21 @@ def main() -> None:
     parser.add_argument("--det-ckpt", type=Path, default=None)
     parser.add_argument("--rec-ckpt", type=Path, default=None)
     parser.add_argument("--fas-ckpt", type=Path, default=None)
+    parser.add_argument("--det-score-th", type=float, default=None)
+    parser.add_argument("--rec-cosine-th", type=float, default=None)
+    parser.add_argument("--rec-norm-min", type=float, default=None)
+    parser.add_argument("--liveness-th", type=float, default=None)
+    parser.add_argument("--clarity-th", type=float, default=None)
     parser.add_argument("--no-cpu-bench", action="store_true")
     args = parser.parse_args()
 
+    thresholds = {
+        "det_score_th": args.det_score_th,
+        "rec_cosine_th": args.rec_cosine_th,
+        "rec_norm_min": args.rec_norm_min,
+        "liveness_th": args.liveness_th,
+        "clarity_th": args.clarity_th,
+    }
     res = export_and_verify_all(
         out_dir=args.out_dir,
         det_arch=args.det_arch,
@@ -459,6 +476,7 @@ def main() -> None:
         rec_ckpt=args.rec_ckpt,
         fas_ckpt=args.fas_ckpt,
         run_cpu_bench=not args.no_cpu_bench,
+        thresholds=thresholds,
     )
     print(json.dumps(res, indent=2, ensure_ascii=False))
 

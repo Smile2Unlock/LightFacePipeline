@@ -542,3 +542,396 @@ class LivenessPhysicalAugmentor(nn.Module):
         # Apply fresh per-frame i.i.d. live camera sensor noise + YUV/MJPEG artifacts
         syn = self.sensor_tail(syn, field_probs=(0.0, 0.0, 0.0, 1.0))
         return syn.to(dtype=orig_dtype)
+
+    @torch.no_grad()
+    def _apply_joint_isp(
+        self,
+        tex_i: torch.Tensor,
+        ctx_i: torch.Tensor,
+        inv_gamma: float,
+        exp_gain: float,
+        drift_slope: float,
+        field_kind: str,
+        awb_shift: float,
+        shot_sigma: float,
+        read_sigma: float,
+        contrast_scale: float = 1.0,
+        haze_add: float = 0.0,
+        is_replay: bool = False,
+        replay_dim: bool = False,
+        moire_freq: float = 28.0,
+        moire_theta: float = 0.7,
+        moire_amp: float = 0.03,
+        roll_speed: float = 0.7,
+        flicker_amp: float = 0.04,
+        do_blur: bool = False,
+        blur_ksize: int = 3,
+        blur_angle: float = 0.5,
+        is_motion_blur: bool = True,
+        do_uvc: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply synchronized ISP / illumination / motion blur / UVC pipeline to a single (tex, ctx) clip pair."""
+        _, t, c, h, w = tex_i.shape
+        device = tex_i.device
+        scale_ratio = 1.5 / 2.7  # tex FOV / ctx FOV
+
+        if contrast_scale != 1.0 or haze_add != 0.0:
+            mean_t = tex_i.mean(dim=(-2, -1), keepdim=True)
+            mean_c = ctx_i.mean(dim=(-2, -1), keepdim=True)
+            tex_i = ((tex_i - mean_t) * contrast_scale + mean_t * 0.88 + haze_add).clamp(0.0, 1.0)
+            ctx_i = ((ctx_i - mean_c) * contrast_scale + mean_c * 0.88 + haze_add).clamp(0.0, 1.0)
+
+        lin_t = tex_i.clamp(min=1e-4).pow(inv_gamma)
+        lin_c = ctx_i.clamp(min=1e-4).pow(inv_gamma)
+
+        t_axis = torch.linspace(-1.0, 1.0, t, device=device).view(1, t, 1, 1, 1)
+        alpha_t = exp_gain * (1.0 + drift_slope * t_axis).clamp(min=0.4)
+
+        yy = torch.linspace(-1.0, 1.0, h, device=device).view(1, 1, 1, h, 1)
+        xx = torch.linspace(-1.0, 1.0, w, device=device).view(1, 1, 1, 1, w)
+        rad2_t = ((xx * scale_ratio) / 0.35) ** 2 + ((yy * scale_ratio) / 0.42) ** 2
+        fm_t = torch.exp(-0.85 * rad2_t).clamp(0.0, 1.0)
+        rad2_c = (xx / 0.35) ** 2 + (yy / 0.42) ** 2
+        fm_c = torch.exp(-0.85 * rad2_c).clamp(0.0, 1.0)
+
+        mult_t = torch.ones((1, 1, 1, h, w), device=device)
+        mult_c = torch.ones((1, 1, 1, h, w), device=device)
+        bg_t = torch.zeros_like(mult_t)
+        bg_c = torch.zeros_like(mult_c)
+
+        if field_kind == "backlight":
+            face_atten = 0.42
+            bg_gain = 2.0
+            bg_lift = 0.32
+            bgm_t = torch.sigmoid((0.28 - fm_t) * 16.0)
+            bgm_c = torch.sigmoid((0.28 - fm_c) * 16.0)
+            mult_t = (1.0 - bgm_t) * face_atten + bgm_t * bg_gain
+            mult_c = (1.0 - bgm_c) * face_atten + bgm_c * bg_gain
+            bg_t = bgm_t * bg_lift
+            bg_c = bgm_c * bg_lift
+        elif field_kind == "screen_glow":
+            r2_t = (xx * scale_ratio) ** 2 + (yy * scale_ratio - 0.35) ** 2
+            r2_c = xx ** 2 + (yy - 0.35) ** 2
+            mult_t = 0.16 + 1.10 * torch.exp(-1.8 * r2_t)
+            mult_c = 0.16 + 1.10 * torch.exp(-1.8 * r2_c)
+        elif field_kind == "shadow":
+            proj_t = (xx * scale_ratio) * math.cos(blur_angle) + (yy * scale_ratio) * math.sin(blur_angle)
+            proj_c = xx * math.cos(blur_angle) + yy * math.sin(blur_angle)
+            mult_t = 0.30 + 0.85 * torch.sigmoid(proj_t * 3.2)
+            mult_c = 0.30 + 0.85 * torch.sigmoid(proj_c * 3.2)
+
+        lin_exp_t = lin_t * alpha_t * mult_t + bg_t
+        lin_exp_c = lin_c * alpha_t * mult_c + bg_c
+
+        awb = torch.ones((1, 1, 3, 1, 1), device=device)
+        awb[:, :, 0] = max(0.80, min(1.22, 1.0 + awb_shift))
+        awb[:, :, 2] = max(0.80, min(1.22, 1.0 - awb_shift))
+
+        shot_t = torch.sqrt(lin_exp_t.clamp(min=0.0)) * shot_sigma
+        shot_c = torch.sqrt(lin_exp_c.clamp(min=0.0)) * shot_sigma
+        srgb_t = (lin_exp_t * awb + torch.randn_like(lin_exp_t) * shot_t + torch.randn_like(lin_exp_t) * read_sigma).clamp(0.0, 1.0).pow(1.0 / inv_gamma).clamp(0.0, 1.0)
+        srgb_c = (lin_exp_c * awb + torch.randn_like(lin_exp_c) * shot_c + torch.randn_like(lin_exp_c) * read_sigma).clamp(0.0, 1.0).pow(1.0 / inv_gamma).clamp(0.0, 1.0)
+
+        if is_replay:
+            t_idx = torch.arange(t, device=device, dtype=torch.float32).view(1, t, 1, 1, 1)
+            if not replay_dim:
+                cool = torch.tensor([0.92, 1.00, 1.12], device=device).view(1, 1, 3, 1, 1)
+                srgb_t = (srgb_t * cool).clamp(0.0, 1.0)
+                srgb_c = (srgb_c * cool).clamp(0.0, 1.0)
+            moire_t = 1.0 + moire_amp * torch.sin(moire_freq * (xx * math.cos(moire_theta) + yy * math.sin(moire_theta)))
+            moire_c = 1.0 + moire_amp * torch.sin((moire_freq * (2.7 / 1.5)) * (xx * math.cos(moire_theta) + yy * math.sin(moire_theta)))
+            flicker_t = 1.0 + flicker_amp * torch.sin(5.0 * (yy * scale_ratio) + roll_speed * t_idx)
+            flicker_c = 1.0 + flicker_amp * torch.sin(5.0 * yy + roll_speed * t_idx)
+            bdist_c = torch.maximum(xx.abs(), yy.abs())
+            bezel_c = torch.sigmoid((0.88 - bdist_c) * 14.0)
+            halo_c = 0.04 * torch.exp(-((bdist_c - 0.85) ** 2) / 0.01)
+            srgb_t = (srgb_t * moire_t * flicker_t).clamp(0.0, 1.0)
+            srgb_c = (srgb_c * moire_c * flicker_c * (0.20 + 0.80 * bezel_c) + halo_c).clamp(0.0, 1.0)
+
+        flat_t = srgb_t.view(t, c, h, w)
+        flat_c = srgb_c.view(t, c, h, w)
+        if do_blur:
+            pad = blur_ksize // 2
+            if is_motion_blur:
+                ker = torch.zeros((blur_ksize, blur_ksize), device=device, dtype=torch.float32)
+                coords = torch.linspace(-pad, pad, blur_ksize * 3, device=device)
+                xs = (torch.round(coords * math.cos(blur_angle)).long() + pad).clamp(0, blur_ksize - 1)
+                ys = (torch.round(coords * math.sin(blur_angle)).long() + pad).clamp(0, blur_ksize - 1)
+                ker[ys, xs] += 1.0
+                ker = ker / ker.sum().clamp(min=1.0)
+            else:
+                ax = torch.arange(-pad, pad + 1, device=device, dtype=torch.float32)
+                g = torch.exp(-(ax ** 2) / (2.0 * 1.0 * 1.0))
+                ker = torch.outer(g, g)
+                ker = ker / ker.sum()
+            w_k = ker.view(1, 1, blur_ksize, blur_ksize).repeat(c, 1, 1, 1)
+            flat_t = F.conv2d(F.pad(flat_t, (pad, pad, pad, pad), mode="reflect"), w_k, groups=c).clamp(0.0, 1.0)
+            flat_c = F.conv2d(F.pad(flat_c, (pad, pad, pad, pad), mode="reflect"), w_k, groups=c).clamp(0.0, 1.0)
+
+        if do_uvc:
+            both = torch.cat((flat_t, flat_c), dim=0)
+            both = self.sensor_tail._apply_uvc_and_dct_jpeg(both)
+            flat_t, flat_c = both[:t], both[t:]
+
+        return flat_t.view(1, t, c, h, w), flat_c.view(1, t, c, h, w)
+
+    @torch.no_grad()
+    def _freeze_pair_synchronized(
+        self,
+        tex_i: torch.Tensor,
+        ctx_i: torch.Tensor,
+        k_idx: int,
+        use_bend: bool,
+        phase: float,
+        tx_amp: float,
+        ty_amp: float,
+        ang_amp: float,
+        sc_amp: float,
+        bend_amp: float,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Strategy B with shared frozen frame index k_idx and scale-matched 2D trajectory on (tex, ctx)."""
+        _, t, c, h, w = tex_i.shape
+        device = tex_i.device
+        scale_ratio = 1.5 / 2.7
+        t_norm = torch.linspace(-1.0, 1.0, t, device=device).view(t, 1, 1)
+        base_yy, base_xx = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, h, device=device),
+            torch.linspace(-1.0, 1.0, w, device=device),
+            indexing="ij",
+        )
+
+        src_t = tex_i[0, k_idx : k_idx + 1].expand(t, -1, -1, -1)
+        src_c = ctx_i[0, k_idx : k_idx + 1].expand(t, -1, -1, -1)
+
+        if not use_bend:
+            tx = tx_amp * torch.sin(math.pi * t_norm + phase)
+            ty = ty_amp * torch.cos(math.pi * t_norm + phase)
+            ang = ang_amp * torch.sin(1.3 * math.pi * t_norm)
+            sc = 1.0 + sc_amp * t_norm
+            ca, sa = torch.cos(ang), torch.sin(ang)
+            gx_t = (base_xx.unsqueeze(0) * ca - base_yy.unsqueeze(0) * sa) * sc + tx
+            gy_t = (base_xx.unsqueeze(0) * sa + base_yy.unsqueeze(0) * ca) * sc + ty
+            gx_c = (base_xx.unsqueeze(0) * ca - base_yy.unsqueeze(0) * sa) * sc + tx * scale_ratio
+            gy_c = (base_xx.unsqueeze(0) * sa + base_yy.unsqueeze(0) * ca) * sc + ty * scale_ratio
+        else:
+            amp = bend_amp * torch.sin(math.pi * t_norm)
+            gx_t = base_xx.unsqueeze(0) + amp * (base_xx.unsqueeze(0) ** 2 - 0.3)
+            gy_t = base_yy.unsqueeze(0) + 0.5 * amp * base_xx.unsqueeze(0)
+            gx_c = base_xx.unsqueeze(0) + (amp * scale_ratio) * (base_xx.unsqueeze(0) ** 2 - 0.3)
+            gy_c = base_yy.unsqueeze(0) + 0.5 * (amp * scale_ratio) * base_xx.unsqueeze(0)
+
+        w_t = F.grid_sample(src_t, torch.stack((gx_t, gy_t), dim=-1), mode="bilinear", padding_mode="border", align_corners=False)
+        w_c = F.grid_sample(src_c, torch.stack((gx_c, gy_c), dim=-1), mode="bilinear", padding_mode="border", align_corners=False)
+        n_t = (w_t + torch.randn_like(w_t) * 0.012).clamp(0.0, 1.0)
+        n_c = (w_c + torch.randn_like(w_c) * 0.012).clamp(0.0, 1.0)
+        return n_t.unsqueeze(0), n_c.unsqueeze(0)
+
+    @torch.no_grad()
+    def augment_pair(
+        self,
+        tex: torch.Tensor,
+        ctx: torch.Tensor,
+        labels: torch.Tensor,
+        depth_target: Optional[torch.Tensor] = None,
+        fine_known: Optional[torch.Tensor] = None,
+        p_normal: float = 0.30,
+        p_frozen: float = 0.20,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        """Synchronized Strategy A (Normal + Differentiated Low-Light) & Strategy B (Frozen-Rigid) on (tex, ctx)."""
+        orig_dtype = tex.dtype
+        tex_w = tex.float().clamp(0.0, 1.0)
+        ctx_w = ctx.float().clamp(0.0, 1.0)
+        b, t = tex_w.shape[:2]
+        device = tex_w.device
+
+        labels_out = labels.clone()
+        depth_out = depth_target.clone() if depth_target is not None else None
+        fk_out = fine_known.clone() if fine_known is not None else torch.ones(b, dtype=torch.bool, device=device)
+
+        tex_out = torch.empty_like(tex_w)
+        ctx_out = torch.empty_like(ctx_w)
+
+        def _u(lo: float, hi: float) -> float:
+            return float(torch.empty(1, device=device).uniform_(lo, hi).item())
+
+        for i in range(b):
+            lbl = int(labels[i].item())
+            fk = bool(fk_out[i].item())
+            is_normal = torch.rand(1, device=device).item() < p_normal
+
+            if is_normal:
+                exp_g = _u(0.85, 1.15)
+                inv_g = _u(0.92, 1.12)
+                drift = _u(-0.04, 0.04)
+                fkind = "uniform"
+                awb = _u(-0.05, 0.05)
+                shot_s = _u(0.002, 0.008)
+                read_s = _u(0.002, 0.007)
+                c_scale = 1.0
+                haze = 0.0
+                is_rep = False
+                rep_dim = False
+                do_blur = torch.rand(1, device=device).item() < 0.15
+                do_uvc = torch.rand(1, device=device).item() < 0.50
+            else:
+                inv_g = _u(1.45, 2.25)
+                drift = _u(-0.08, 0.08)
+                awb = _u(-0.15, 0.15)
+                shot_s = _u(0.008, 0.032)
+                read_s = _u(0.005, 0.022)
+                do_blur = torch.rand(1, device=device).item() < 0.30
+                do_uvc = torch.rand(1, device=device).item() < 0.80
+
+                eff_lbl = lbl if (lbl == 0 or fk) else int([1, 2, 2][int(torch.randint(0, 3, (1,)).item())])
+                if eff_lbl == 0:
+                    exp_g = _u(0.10, 0.55)
+                    r = torch.rand(1, device=device).item()
+                    fkind = "uniform" if r < 0.55 else ("backlight" if r < 0.80 else "screen_glow")
+                    c_scale, haze, is_rep, rep_dim = 1.0, 0.0, False, False
+                    if fkind == "screen_glow":
+                        awb = _u(-0.16, -0.04)
+                elif eff_lbl == 1:
+                    exp_g = _u(0.10, 0.52)
+                    fkind = "uniform" if torch.rand(1, device=device).item() < 0.65 else "shadow"
+                    c_scale = _u(0.60, 0.85)
+                    haze = _u(0.03, 0.12)
+                    is_rep, rep_dim = False, False
+                elif eff_lbl == 2:
+                    is_rep = True
+                    rep_dim = torch.rand(1, device=device).item() < 0.50
+                    exp_g = _u(0.14, 0.48) if rep_dim else _u(0.55, 1.02)
+                    inv_g = _u(1.15, 1.85) if not rep_dim else _u(1.40, 2.15)
+                    fkind = "uniform"
+                    c_scale, haze = 1.0, 0.0
+                else:
+                    exp_g = _u(0.10, 0.55)
+                    fkind = "uniform" if torch.rand(1, device=device).item() < 0.65 else "backlight"
+                    c_scale, haze, is_rep, rep_dim = _u(0.88, 1.12), 0.0, False, False
+
+            ti, ci = self._apply_joint_isp(
+                tex_w[i : i + 1],
+                ctx_w[i : i + 1],
+                inv_gamma=inv_g,
+                exp_gain=exp_g,
+                drift_slope=drift,
+                field_kind=fkind,
+                awb_shift=awb,
+                shot_sigma=shot_s,
+                read_sigma=read_s,
+                contrast_scale=c_scale,
+                haze_add=haze,
+                is_replay=is_rep,
+                replay_dim=rep_dim,
+                moire_freq=_u(18.0, 42.0),
+                moire_theta=_u(0.0, math.pi),
+                moire_amp=_u(0.02, 0.06),
+                roll_speed=_u(0.4, 1.2),
+                flicker_amp=_u(0.03, 0.08),
+                do_blur=do_blur,
+                blur_ksize=int([3, 5][int(torch.randint(0, 2, (1,)).item())]),
+                blur_angle=_u(0.0, math.pi),
+                is_motion_blur=torch.rand(1, device=device).item() < 0.6,
+                do_uvc=do_uvc,
+            )
+
+            if lbl == 0 and torch.rand(1, device=device).item() < p_frozen:
+                k_idx = int(torch.randint(0, t, (1,), device=device).item())
+                ti, ci = self._freeze_pair_synchronized(
+                    ti,
+                    ci,
+                    k_idx=k_idx,
+                    use_bend=torch.rand(1, device=device).item() < 0.35,
+                    phase=_u(0.0, 2.0 * math.pi),
+                    tx_amp=_u(0.01, 0.035),
+                    ty_amp=_u(0.01, 0.035),
+                    ang_amp=_u(0.01, 0.04),
+                    sc_amp=_u(0.005, 0.02),
+                    bend_amp=_u(0.02, 0.05),
+                )
+                labels_out[i] = 4
+                fk_out[i] = True
+                if depth_out is not None:
+                    depth_out[i] = 0.0
+
+            tex_out[i : i + 1] = ti
+            ctx_out[i : i + 1] = ci
+
+        return tex_out.to(dtype=orig_dtype), ctx_out.to(dtype=orig_dtype), labels_out, depth_out, fk_out
+
+    @torch.no_grad()
+    def apply_eval_lighting(
+        self,
+        tex: torch.Tensor,
+        ctx: torch.Tensor,
+        mode: str,
+        seed: int = 42,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Deterministic synchronized lighting transforms for Phase 3 ISO 30107-3 evaluation matrix."""
+        if mode == "normal":
+            return tex, ctx
+
+        orig_dtype = tex.dtype
+        tex_w = tex.float().clamp(0.0, 1.0)
+        ctx_w = ctx.float().clamp(0.0, 1.0)
+        b, t = tex_w.shape[:2]
+        tex_out = torch.empty_like(tex_w)
+        ctx_out = torch.empty_like(ctx_w)
+
+        cpu_state = torch.random.get_rng_state()
+        cuda_state = torch.cuda.get_rng_state(tex.device) if tex.is_cuda else None
+        try:
+            torch.manual_seed(seed)
+            if tex.is_cuda:
+                torch.cuda.manual_seed(seed)
+
+            for i in range(b):
+                if mode == "low_light":
+                    ti, ci = self._apply_joint_isp(
+                        tex_w[i : i + 1], ctx_w[i : i + 1],
+                        inv_gamma=2.0, exp_gain=0.18, drift_slope=0.03,
+                        field_kind="uniform", awb_shift=-0.06,
+                        shot_sigma=0.018, read_sigma=0.012, do_blur=False, do_uvc=True,
+                    )
+                elif mode == "backlight":
+                    ti, ci = self._apply_joint_isp(
+                        tex_w[i : i + 1], ctx_w[i : i + 1],
+                        inv_gamma=1.9, exp_gain=0.35, drift_slope=0.02,
+                        field_kind="backlight", awb_shift=0.02,
+                        shot_sigma=0.014, read_sigma=0.009, do_blur=False, do_uvc=True,
+                    )
+                elif mode == "screen_glow":
+                    ti, ci = self._apply_joint_isp(
+                        tex_w[i : i + 1], ctx_w[i : i + 1],
+                        inv_gamma=1.8, exp_gain=0.28, drift_slope=0.02,
+                        field_kind="screen_glow", awb_shift=-0.12,
+                        shot_sigma=0.012, read_sigma=0.008, do_blur=False, do_uvc=True,
+                    )
+                elif mode == "dim_screen":
+                    ti, ci = self._apply_joint_isp(
+                        tex_w[i : i + 1], ctx_w[i : i + 1],
+                        inv_gamma=1.8, exp_gain=0.25, drift_slope=0.02,
+                        field_kind="uniform", awb_shift=-0.04,
+                        shot_sigma=0.012, read_sigma=0.008,
+                        is_replay=True, replay_dim=True, do_blur=False, do_uvc=True,
+                    )
+                elif mode == "frozen_rigid":
+                    ti, ci = self._apply_joint_isp(
+                        tex_w[i : i + 1], ctx_w[i : i + 1],
+                        inv_gamma=1.9, exp_gain=0.22, drift_slope=0.02,
+                        field_kind="uniform", awb_shift=-0.05,
+                        shot_sigma=0.014, read_sigma=0.010, do_blur=False, do_uvc=True,
+                    )
+                    ti, ci = self._freeze_pair_synchronized(
+                        ti, ci, k_idx=t // 2, use_bend=False, phase=0.8 + i * 0.3,
+                        tx_amp=0.024, ty_amp=0.022, ang_amp=0.025, sc_amp=0.012, bend_amp=0.03,
+                    )
+                else:
+                    raise ValueError(f"Unknown eval lighting mode: {mode}")
+                tex_out[i : i + 1] = ti
+                ctx_out[i : i + 1] = ci
+        finally:
+            torch.random.set_rng_state(cpu_state)
+            if cuda_state is not None:
+                torch.cuda.set_rng_state(cuda_state, tex.device)
+
+        return tex_out.to(dtype=orig_dtype), ctx_out.to(dtype=orig_dtype)

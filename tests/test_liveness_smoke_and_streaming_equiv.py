@@ -17,7 +17,7 @@ from liveness.dataset import SyntheticLivenessSmokeDataset, VideoClipLivenessDat
 from liveness.losses import FASCombinedLoss
 from liveness.st_fas_lite import STFASLiteClip
 from liveness.teacher_dinov2 import DualStreamDINOv2Teacher
-from liveness.train import train_one_epoch_liveness
+from liveness.train import train_one_epoch_liveness, train_one_epoch_teacher
 
 
 def test_st_fas_lite_clip_vs_streaming_pytorch_equiv() -> None:
@@ -98,3 +98,34 @@ def test_dinov2_reg_teacher_and_liveness_gpu_smoke() -> None:
         np.full((4, 8, 3, 32, 32), 0.27, dtype=np.float32),
     )
     assert not audit["warning_shortcut_risk"]
+
+
+def test_synchronized_pair_augmentor_and_teacher_smoke() -> None:
+    device = get_device()
+    aug = LivenessPhysicalAugmentor().to(device)
+    tex = torch.rand(6, 8, 3, 128, 128, device=device)
+    ctx = torch.rand(6, 8, 3, 128, 128, device=device)
+    labels = torch.tensor([0, 0, 1, 2, 3, 2], device=device)
+    fk = torch.tensor([True, True, True, True, True, False], device=device)
+    depth = torch.zeros(6, 8, 1, 8, 8, device=device)
+
+    t_out, c_out, l_out, d_out, fk_out = aug.augment_pair(
+        tex, ctx, labels, depth_target=depth, fine_known=fk, p_normal=0.33, p_frozen=0.50
+    )
+    assert t_out.shape == tex.shape and c_out.shape == ctx.shape
+    assert d_out is not None and torch.isfinite(t_out).all() and torch.isfinite(c_out).all()
+
+    criterion = FASCombinedLoss().to(device)
+    student = STFASLiteClip().to(device)
+    s_out = student.forward_train(t_out, c_out)
+    ld = criterion(s_out, l_out, depth_target=d_out, clarity_target=torch.full((6,), 0.6, device=device), fine_known=fk_out)
+    assert torch.isfinite(ld["loss"])
+
+    teacher = DualStreamDINOv2Teacher(offline_config_only=True, lora_r=4, enable_grad_checkpointing=True).to(device)
+    opt = torch.optim.AdamW([p for p in teacher.parameters() if p.requires_grad], lr=1e-4)
+    ds = SyntheticLivenessSmokeDataset(n=8)
+    loader = DataLoader(ds, batch_size=4, shuffle=False, num_workers=0)
+    t_stats = train_one_epoch_teacher(
+        teacher, loader, aug, opt, device, precision="fp16", sdpa_backend="math", max_steps=2
+    )
+    assert torch.isfinite(torch.tensor(t_stats["loss"]))
