@@ -77,7 +77,7 @@ class VideoClipLivenessDataset(Dataset):
             if balance_domains:
                 # Inverse sqrt domain frequency inside Live/Spoof keeps every source well represented without extreme noise
                 dc = domain_cls_counts[(src, is_spoof)]
-                w = 1.0 / (max(dc, 1) ** 0.75)
+                w = 1.0 / (max(dc, 1) ** 0.50)
             else:
                 w = 0.5 / max(cls_totals[is_spoof], 1)
             weights.append(float(w))

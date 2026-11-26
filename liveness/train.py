@@ -590,7 +590,7 @@ def main() -> None:
     opt_steps_per_epoch = max(1, math.ceil(min(len(loader), args.max_steps or len(loader)) / max(ga, 1)))
     scheduler = _make_warmup_cosine(optimizer, total_steps=opt_steps_per_epoch * epochs, warmup_steps=min(40, opt_steps_per_epoch))
     scaler = get_grad_scaler(device, precision)
-    best_acer = 1.0
+    best_score = (-1.0, -1.0)
     history_path = run_dir / "history.jsonl"
 
     for epoch in range(1, epochs + 1):
@@ -635,9 +635,10 @@ def main() -> None:
             flush=True,
         )
         save_checkpoint(run_dir / "last.pt", student, optimizer=optimizer, ema=ema, epoch=epoch, metrics=rec)
-        cur_acer = float(val_ema.get("all", {}).get("ACER", val_raw.get("all", {}).get("ACER", tr["loss"])))
-        if cur_acer < best_acer:
-            best_acer = cur_acer
+        all_m = val_ema.get("all", val_raw.get("all", {}))
+        cur_score = (float(all_m.get("auc", 0.0)), -float(all_m.get("ACER", tr["loss"])))
+        if cur_score > best_score:
+            best_score = cur_score
             save_checkpoint(run_dir / "best.pt", student, optimizer=optimizer, ema=ema, epoch=epoch, metrics=rec)
 
 

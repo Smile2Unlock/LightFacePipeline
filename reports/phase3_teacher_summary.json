@@ -1,0 +1,47 @@
+{
+  "stage": "phase3_stage1_teacher",
+  "backbone": "facebook/dinov2-with-registers-base (LoRA r=16) + ConvNeXtV2-Laplacian",
+  "selected_ckpt_for_distillation": "runs/liveness_st_fas_lite_local/teacher/last.pt",
+  "selected_epoch": 8,
+  "epochs": 8,
+  "val_epoch8": {
+    "all_auc": 0.8891681021380078,
+    "all_acer": 0.2040252305198095,
+    "normal_auc": 0.9521,
+    "low_light_auc": 0.9023,
+    "backlight_auc": 0.8735,
+    "frozen_vs_live_auc": 0.9972
+  },
+  "test_epoch8": {
+    "normal": {
+      "ALL_TEST_AUC": 0.9150,
+      "ALL_TEST_ACER": 0.1582,
+      "FULL_FRAME_NON_LCC_AUC": 0.9427,
+      "FULL_FRAME_NON_LCC_ACER": 0.1186,
+      "per_source_auc": {
+        "jonathansuru": 0.9832,
+        "osama6": 1.0000,
+        "uniquedata_paired": 1.0000,
+        "uniquedata_webcam": 0.8750,
+        "lcc_fasd": 0.8383,
+        "uniquedata_mobile_zeroshot": 0.8700,
+        "casia_fasd_zeroshot": 0.8468
+      }
+    },
+    "low_light": {
+      "ALL_TEST_AUC": 0.8505,
+      "ALL_TEST_ACER": 0.2191,
+      "FULL_FRAME_NON_LCC_AUC": 0.8910,
+      "FULL_FRAME_NON_LCC_ACER": 0.1898,
+      "per_source_auc": {
+        "jonathansuru": 0.9664,
+        "osama6": 0.9824,
+        "uniquedata_paired": 0.9886,
+        "uniquedata_webcam": 0.8750,
+        "lcc_fasd": 0.7315,
+        "uniquedata_mobile_zeroshot": 0.8233,
+        "casia_fasd_zeroshot": 0.7566
+      }
+    }
+  }
+}
