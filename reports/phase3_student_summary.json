@@ -1,0 +1,30 @@
+{
+  "stage": "phase3_stage2_student",
+  "student_arch": "ST-FAS-Lite (MobileNetV3-Small-050 Dual-Scale + CDC2d + TemporalAttention + QualityPooling)",
+  "params_millions": 1.28,
+  "teacher_ckpt": "runs/liveness_st_fas_lite_local/teacher/last.pt",
+  "final_ckpt": "runs/liveness_st_fas_lite_local/student_v2/best.pt",
+  "val_calibrated_thresholds": {
+    "th_min_acer": 0.7623071670532227,
+    "th_apcer_2pct": 0.8729837046132815,
+    "th_apcer_1pct": 0.8918560550676117,
+    "val_all_auc": 0.8804532622089124,
+    "val_all_acer": 0.18660412084912578
+  },
+  "overall_test_all_domains_auc": 0.8462056506355095,
+  "overall_test_real_fps_auc": 0.9152748226950355,
+  "lighting_auc": {
+    "normal": 0.8461,
+    "low_light": 0.8002,
+    "screen_glow": 0.8093,
+    "backlight": 0.7360,
+    "dim_screen": 0.9998,
+    "frozen_rigid": 0.9139
+  },
+  "zeroshot_uniquedata_mobile_auc": {
+    "normal": 0.9100,
+    "low_light": 0.9233
+  },
+  "luma_anti_shortcut_gap": 0.3005,
+  "bbox_jitter_6pct_delta_acer": 0.0140
+}
