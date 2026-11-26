@@ -1,0 +1,139 @@
+{
+  "dropped_short_or_nodet": 3,
+  "splits": {
+    "train": {
+      "total": 1122,
+      "live": 287,
+      "spoof": 835,
+      "by_attack_group": {
+        "live": 287,
+        "generic_spoof": 739,
+        "replay": 35,
+        "print": 36,
+        "mask_cutout": 25
+      },
+      "by_source": {
+        "axondata": {
+          "live": 0,
+          "spoof": 40
+        },
+        "jonathansuru": {
+          "live": 86,
+          "spoof": 98
+        },
+        "lcc_fasd": {
+          "live": 115,
+          "spoof": 601
+        },
+        "osama6": {
+          "live": 40,
+          "spoof": 40
+        },
+        "uniquedata_diverse_live": {
+          "live": 24,
+          "spoof": 0
+        },
+        "uniquedata_paired": {
+          "live": 16,
+          "spoof": 20
+        },
+        "uniquedata_webcam": {
+          "live": 6,
+          "spoof": 36
+        }
+      }
+    },
+    "val": {
+      "total": 279,
+      "live": 71,
+      "spoof": 208,
+      "by_attack_group": {
+        "live": 71,
+        "generic_spoof": 176,
+        "replay": 12,
+        "print": 12,
+        "mask_cutout": 8
+      },
+      "by_source": {
+        "axondata": {
+          "live": 0,
+          "spoof": 13
+        },
+        "jonathansuru": {
+          "live": 24,
+          "spoof": 41
+        },
+        "lcc_fasd": {
+          "live": 17,
+          "spoof": 120
+        },
+        "osama6": {
+          "live": 15,
+          "spoof": 15
+        },
+        "uniquedata_diverse_live": {
+          "live": 8,
+          "spoof": 0
+        },
+        "uniquedata_paired": {
+          "live": 5,
+          "spoof": 7
+        },
+        "uniquedata_webcam": {
+          "live": 2,
+          "spoof": 12
+        }
+      }
+    },
+    "test": {
+      "total": 515,
+      "live": 139,
+      "spoof": 376,
+      "by_attack_group": {
+        "live": 139,
+        "generic_spoof": 196,
+        "replay": 54,
+        "print": 98,
+        "mask_cutout": 28
+      },
+      "by_source": {
+        "axondata": {
+          "live": 0,
+          "spoof": 13
+        },
+        "casia_fasd_zeroshot": {
+          "live": 39,
+          "spoof": 114
+        },
+        "jonathansuru": {
+          "live": 24,
+          "spoof": 57
+        },
+        "lcc_fasd": {
+          "live": 23,
+          "spoof": 114
+        },
+        "osama6": {
+          "live": 25,
+          "spoof": 25
+        },
+        "uniquedata_diverse_live": {
+          "live": 8,
+          "spoof": 0
+        },
+        "uniquedata_mobile_zeroshot": {
+          "live": 10,
+          "spoof": 30
+        },
+        "uniquedata_paired": {
+          "live": 8,
+          "spoof": 11
+        },
+        "uniquedata_webcam": {
+          "live": 2,
+          "spoof": 12
+        }
+      }
+    }
+  }
+}
