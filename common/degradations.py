@@ -783,16 +783,16 @@ class LivenessPhysicalAugmentor(nn.Module):
                 do_uvc = torch.rand(1, device=device).item() < 0.80
 
                 eff_lbl = lbl if (lbl == 0 or fk) else int([1, 2, 2][int(torch.randint(0, 3, (1,)).item())])
+                r_f = torch.rand(1, device=device).item()
                 if eff_lbl == 0:
                     exp_g = _u(0.10, 0.55)
-                    r = torch.rand(1, device=device).item()
-                    fkind = "uniform" if r < 0.55 else ("backlight" if r < 0.80 else "screen_glow")
+                    fkind = "uniform" if r_f < 0.55 else ("backlight" if r_f < 0.80 else "screen_glow")
                     c_scale, haze, is_rep, rep_dim = 1.0, 0.0, False, False
                     if fkind == "screen_glow":
                         awb = _u(-0.16, -0.04)
                 elif eff_lbl == 1:
                     exp_g = _u(0.10, 0.52)
-                    fkind = "uniform" if torch.rand(1, device=device).item() < 0.65 else "shadow"
+                    fkind = "uniform" if r_f < 0.50 else ("backlight" if r_f < 0.75 else ("shadow" if r_f < 0.90 else "screen_glow"))
                     c_scale = _u(0.60, 0.85)
                     haze = _u(0.03, 0.12)
                     is_rep, rep_dim = False, False
@@ -801,11 +801,11 @@ class LivenessPhysicalAugmentor(nn.Module):
                     rep_dim = torch.rand(1, device=device).item() < 0.50
                     exp_g = _u(0.14, 0.48) if rep_dim else _u(0.55, 1.02)
                     inv_g = _u(1.15, 1.85) if not rep_dim else _u(1.40, 2.15)
-                    fkind = "uniform"
+                    fkind = "uniform" if r_f < 0.60 else ("backlight" if r_f < 0.85 else "shadow")
                     c_scale, haze = 1.0, 0.0
                 else:
                     exp_g = _u(0.10, 0.55)
-                    fkind = "uniform" if torch.rand(1, device=device).item() < 0.65 else "backlight"
+                    fkind = "uniform" if r_f < 0.55 else ("backlight" if r_f < 0.80 else "screen_glow")
                     c_scale, haze, is_rep, rep_dim = _u(0.88, 1.12), 0.0, False, False
 
             ti, ci = self._apply_joint_isp(

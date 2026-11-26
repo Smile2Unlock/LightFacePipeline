@@ -68,6 +68,16 @@ def _collect_predictions(
             lbl = np.full(len(lm_idx), 4, dtype=np.int64)
             src = [src[i] for i in np.where(live_mask)[0]]
             grp = ["frozen_rigid"] * len(lm_idx)
+        elif lighting_mode == "dim_screen":
+            # Apply dim screen replay moire/bezel only to spoof samples (paired against low_light live in main)
+            spoof_mask = lbl != 0
+            if not spoof_mask.any():
+                continue
+            sm_idx = torch.from_numpy(np.where(spoof_mask)[0]).to(device)
+            tex, ctx = augmentor.apply_eval_lighting(tex[sm_idx], ctx[sm_idx], "dim_screen", seed=8000 + bi)
+            lbl = lbl[spoof_mask]
+            src = [src[i] for i in np.where(spoof_mask)[0]]
+            grp = ["dim_screen"] * len(sm_idx)
         else:
             tex, ctx = augmentor.apply_eval_lighting(tex, ctx, lighting_mode, seed=3000 + bi * 13)
 
@@ -140,9 +150,9 @@ def main() -> None:
 
     # 2) Evaluate on Test across 4 lighting conditions + dim_screen + frozen_rigid
     test_by_cond: Dict[str, Any] = {}
-    all_t_p, all_t_y = [], []
+    all_t_p, all_t_y, all_t_src = [], [], []
     live_luma_list, spoof_luma_list = [], []
-    for cond in ("normal", "backlight", "low_light", "screen_glow", "dim_screen"):
+    for cond in ("normal", "backlight", "low_light", "screen_glow"):
         res = _collect_predictions(model, test_loader, augmentor, cond, device)
         m_acer = _eval_with_th(res["probs"], res["is_live"], th_acer)
         m_a2 = _eval_with_th(res["probs"], res["is_live"], th_apcer2)
@@ -160,18 +170,34 @@ def main() -> None:
         }
         all_t_p.append(res["probs"])
         all_t_y.append(res["is_live"])
+        all_t_src.extend(res["sources"])
         if len(res["live_luma"]) > 0:
             live_luma_list.append(res["live_luma"])
         if len(res["spoof_luma"]) > 0:
             spoof_luma_list.append(res["spoof_luma"])
 
+    low_res = test_by_cond["low_light"]["res"]
+    normal_res = test_by_cond["normal"]["res"]
+    live_low_p = low_res["probs"][low_res["is_live"] == 1]
+
+    # Dim-screen replay Spoofs paired against dark Live faces
+    ds_res = _collect_predictions(model, test_loader, augmentor, "dim_screen", device)
+    ds_p = np.concatenate([live_low_p, ds_res["probs"]])
+    ds_y = np.concatenate([np.ones(len(live_low_p), dtype=np.int64), ds_res["is_live"]])
+    dim_screen_summary = {
+        "auc": compute_iso30107_metrics(ds_p, ds_y)["auc"],
+        "n_live": int(len(live_low_p)),
+        "n_spoof": int(len(ds_res["probs"])),
+        "at_val_th_acer": _eval_with_th(ds_p, ds_y, th_acer)["operating_point"],
+        "at_val_th_apcer2": _eval_with_th(ds_p, ds_y, th_apcer2)["operating_point"],
+        "clarity_mean": float(ds_res["clarities"].mean()),
+    }
+
     # Frozen-Rigid vs Live (combine frozen_rigid spoofs with normal+low_light live)
     fr_res = _collect_predictions(model, test_loader, augmentor, "frozen_rigid", device)
-    normal_res = test_by_cond["normal"]["res"]
-    low_res = test_by_cond["low_light"]["res"]
     live_mix_p = np.concatenate([
         normal_res["probs"][normal_res["is_live"] == 1],
-        low_res["probs"][low_res["is_live"] == 1],
+        live_low_p,
     ])
     fr_p = np.concatenate([live_mix_p, fr_res["probs"]])
     fr_y = np.concatenate([np.ones(len(live_mix_p), dtype=np.int64), fr_res["is_live"]])
@@ -235,10 +261,14 @@ def main() -> None:
     clean_ll_acer = test_by_cond["low_light"]["summary"]["at_val_th_acer"]["ACER"]
 
     # 6) Anti-shortcut Luma Audit & Overall Test Metric
-    p_overall = np.concatenate(all_t_p + [fr_res["probs"]])
-    y_overall = np.concatenate(all_t_y + [fr_res["is_live"]])
+    p_overall = np.concatenate(all_t_p + [ds_res["probs"], fr_res["probs"]])
+    y_overall = np.concatenate(all_t_y + [ds_res["is_live"], fr_res["is_live"]])
+    s_overall = np.asarray(all_t_src + ds_res["sources"] + fr_res["sources"])
     overall_m = compute_iso30107_metrics(p_overall, y_overall, threshold=th_acer)
     overall_a2 = compute_iso30107_metrics(p_overall, y_overall, threshold=th_apcer2)
+
+    real_fps_mask = s_overall != "casia_fasd_zeroshot"
+    rf_m = compute_iso30107_metrics(p_overall[real_fps_mask], y_overall[real_fps_mask], threshold=th_acer)
     luma_audit = audit_luma_anti_shortcut(np.concatenate(live_luma_list, axis=0), np.concatenate(spoof_luma_list, axis=0))
 
     report = {
@@ -257,7 +287,14 @@ def main() -> None:
             "n_live": overall_m["n_live"],
             "n_spoof": overall_m["n_spoof"],
         },
-        "lighting_matrix": {k: v["summary"] for k, v in test_by_cond.items()} | {"frozen_rigid": frozen_summary},
+        "overall_test_real_fps": {
+            "auc": rf_m["auc"],
+            "at_val_th_acer": rf_m["operating_point"],
+            "n_live": rf_m["n_live"],
+            "n_spoof": rf_m["n_spoof"],
+        },
+        "lighting_matrix": {k: v["summary"] for k, v in test_by_cond.items()}
+        | {"dim_screen": dim_screen_summary, "frozen_rigid": frozen_summary},
         "attack_breakdown": attack_breakdown,
         "domain_breakdown": domain_breakdown,
         "bbox_jitter_sensitivity": {
@@ -276,8 +313,9 @@ def main() -> None:
         "",
         f"- **Checkpoint**: `{args.ckpt}`",
         f"- **Val-Calibrated Thresholds**: `th_min_acer = {th_acer:.4f}`, `th_apcer<=2% = {th_apcer2:.4f}`, `th_apcer<=1% = {th_apcer1:.4f}`",
-        f"- **Overall Test**: `AUC = {overall_m['auc']:.4f}`, `ACER@th_acer = {overall_m['operating_point']['ACER']*100:.2f}%`, "
+        f"- **Overall Test (All 9 Domains)**: `AUC = {overall_m['auc']:.4f}`, `ACER@th_acer = {overall_m['operating_point']['ACER']*100:.2f}%`, "
         f"`BPCER@th_apcer2 = {overall_a2['operating_point']['BPCER']*100:.2f}%`, `APCER@th_apcer2 = {overall_a2['operating_point']['APCER']*100:.2f}%`",
+        f"- **Real-FPS Test (Excl. 1-fps CASIA-2012)**: `AUC = {rf_m['auc']:.4f}`, `ACER@th_acer = {rf_m['operating_point']['ACER']*100:.2f}%`",
         f"- **Luma Anti-Shortcut Audit**: `live_mean={luma_audit['live_luma_mean']:.2f}`, `spoof_mean={luma_audit['spoof_luma_mean']:.2f}`, "
         f"`gap={luma_audit['mean_luma_gap']:.2f}`, `warning={luma_audit['warning_shortcut_risk']}`",
         f"- **Bbox ±6% Jitter Sensitivity (Low-Light)**: `clean ACER={clean_ll_acer*100:.2f}%` vs `jittered ACER={jit_acer*100:.2f}%` (`Δ={jit_acer-clean_ll_acer:+.4f}`)",

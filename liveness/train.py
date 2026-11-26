@@ -382,8 +382,10 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/liveness_st_fas_lite_local.yaml"))
     parser.add_argument("--stage", choices=["teacher", "student"], default="student")
     parser.add_argument("--teacher-ckpt", type=Path, default=None)
+    parser.add_argument("--student-init", type=Path, default=None)
     parser.add_argument("--run-dir", type=Path, default=None)
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--grad-accum", type=int, default=None)
     parser.add_argument("--samples-per-epoch", type=int, default=None)
@@ -569,14 +571,18 @@ def main() -> None:
         backbone=cfg["model"].get("backbone", "mobilenetv3_dual"),
         pretrained=True,
     ).to(device)
+    if args.student_init is not None:
+        init_ck = torch.load(args.student_init, map_location="cpu", weights_only=False)
+        student.load_state_dict(init_ck.get("ema", init_ck.get("model", init_ck)), strict=True)
+        print(f"Initialized Student weights from {args.student_init} (epoch={init_ck.get('epoch')})", flush=True)
     ema = ModelEMA(
         student,
         decay=float(st_cfg.get("ema_decay", 0.99)),
         warmup_tau=float(st_cfg.get("ema_warmup_tau", 40.0)),
     )
     criterion = FASCombinedLoss().to(device)
-    stu_lr = float(st_cfg.get("lr", 1e-3))
-    bb_lr = float(st_cfg.get("backbone_lr", stu_lr * 0.3))
+    stu_lr = float(args.lr if args.lr is not None else st_cfg.get("lr", 1e-3))
+    bb_lr = float(args.lr * 0.3 if args.lr is not None else st_cfg.get("backbone_lr", stu_lr * 0.3))
     bb_params, head_params = [], []
     for name, p in student.named_parameters():
         if name.startswith(("spatial_enc.tex_branch.", "spatial_enc.ctx_branch.")):
