@@ -127,7 +127,7 @@ class STFASSpatialEncoder(nn.Module):
         tex_curr: torch.Tensor,
         tex_prev: torch.Tensor,
         ctx_curr: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         tex_norm = self._norm_rgb(tex_curr)
         ctx_norm = self._norm_rgb(ctx_curr)
         diff = torch.abs(tex_curr - tex_prev)
@@ -135,12 +135,12 @@ class STFASSpatialEncoder(nn.Module):
         tex_in = torch.cat((tex_norm, diff, cdc_hi), dim=1)
 
         v_tex, fmap_tex = self.tex_branch(tex_in)
-        v_ctx, _ = self.ctx_branch(ctx_norm)
+        v_ctx, fmap_ctx = self.ctx_branch(ctx_norm)
 
         feat = self.fusion(torch.cat((v_tex, v_ctx), dim=-1))
         quality_logit = self.quality_head(feat)
         depth_map = self.depth_head(fmap_tex)
-        return feat, quality_logit, fmap_tex, depth_map
+        return feat, quality_logit, fmap_tex, fmap_ctx, depth_map
 
     def forward(
         self,
@@ -249,7 +249,7 @@ class STFASLiteClip(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         b, t, c, h, w = clip_tex.shape
         tex_prev = torch.cat((clip_tex[:, 0:1], clip_tex[:, :-1]), dim=1)
-        feat, q_logit, fmap_tex, depth_map = self.spatial_enc.forward_train(
+        feat, q_logit, fmap_tex, fmap_ctx, depth_map = self.spatial_enc.forward_train(
             clip_tex.reshape(b * t, c, h, w),
             tex_prev.reshape(b * t, c, h, w),
             clip_ctx.reshape(b * t, c, h, w),
@@ -263,6 +263,7 @@ class STFASLiteClip(nn.Module):
             "clarity_score": clarity_score,
             "pooled_feat": pooled,
             "tex_fmap": fmap_tex.view(b, t, fmap_tex.shape[1], fmap_tex.shape[2], fmap_tex.shape[3]),
+            "ctx_fmap": fmap_ctx.view(b, t, fmap_ctx.shape[1], fmap_ctx.shape[2], fmap_ctx.shape[3]),
             "depth_pred": depth_map.view(b, t, 1, depth_map.shape[2], depth_map.shape[3]),
             "frame_quality_logits": quality_seq,
         }

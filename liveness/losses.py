@@ -95,15 +95,21 @@ class PatchAffinityKDLoss(nn.Module):
         return F.smooth_l1_loss(s_aff, t_aff)
 
 
+def _binary_live_logit(logits: torch.Tensor) -> torch.Tensor:
+    """Exact log-odds log(P_live / P_spoof) from 5-class logits."""
+    lf = logits.float()
+    return lf[:, 0] - torch.logsumexp(lf[:, 1:], dim=-1)
+
+
 class FASCombinedLoss(nn.Module):
-    """Composite Phase 3 loss matching Section 七.4 equation."""
+    """Composite Phase 3 loss matching Section 七.4 equation with clean binary-aware KD."""
 
     def __init__(
         self,
         w_depth: float = 0.5,
         w_clarity: float = 0.3,
-        w_kd_logits: float = 1.0,
-        w_patch_kd: float = 1.0,
+        w_kd_logits: float = 0.5,
+        w_patch_kd: float = 0.3,
         w_ssdg: float = 0.2,
         kd_temp: float = 2.0,
     ) -> None:
@@ -142,10 +148,20 @@ class FASCombinedLoss(nn.Module):
         l_kd = l_ce.new_zeros(())
         l_patch = l_ce.new_zeros(())
         if teacher_out is not None:
-            s_log = F.log_softmax(stu_out["spoof_logits"].float() / self.kd_temp, dim=-1)
-            t_prob = F.softmax(teacher_out["logits"].detach().float() / self.kd_temp, dim=-1)
-            l_kd = F.kl_div(s_log, t_prob, reduction="batchmean") * (self.kd_temp ** 2)
-            l_patch = self.patch_kd(stu_out["tex_fmap"], teacher_out["patch_affinity"])
+            # Binary Live-vs-Spoof distillation (valid for all fine_known=True/False clips without subtype noise)
+            s_bin = _binary_live_logit(stu_out["spoof_logits"]) / self.kd_temp
+            t_bin_prob = torch.sigmoid(_binary_live_logit(teacher_out["logits"].detach()) / self.kd_temp)
+            l_kd = F.binary_cross_entropy_with_logits(s_bin, t_bin_prob) * (self.kd_temp ** 2)
+
+            if fine_known is None or bool(fine_known.any().item()):
+                mask = fine_known if fine_known is not None else torch.ones_like(labels, dtype=torch.bool)
+                s_log5 = F.log_softmax(stu_out["spoof_logits"][mask].float() / self.kd_temp, dim=-1)
+                t_prob5 = F.softmax(teacher_out["logits"][mask].detach().float() / self.kd_temp, dim=-1)
+                l_kd = l_kd + 0.25 * F.kl_div(s_log5, t_prob5, reduction="batchmean") * (self.kd_temp ** 2)
+
+            # Match DINOv2 (run on 2.7x ctx FOV) against Student 2.7x ctx_fmap
+            fmap_kd = stu_out.get("ctx_fmap", stu_out["tex_fmap"])
+            l_patch = self.patch_kd(fmap_kd, teacher_out["patch_affinity"])
 
         total = (
             l_ce

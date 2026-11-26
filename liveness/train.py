@@ -134,10 +134,11 @@ def train_one_epoch_teacher(
         if accum_counter == grad_accum or (step + 1) == total_batches:
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
-            if scheduler is not None:
+            if scheduler is not None and scaler.get_scale() >= scale_before:
                 scheduler.step()
             accum_counter = 0
 
@@ -234,11 +235,12 @@ def train_one_epoch_liveness(
         if accum_counter == grad_accum or (step + 1) == total_batches:
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(student.parameters(), max_norm=5.0)
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
             ema.update(student)
-            if scheduler is not None:
+            if scheduler is not None and scaler.get_scale() >= scale_before:
                 scheduler.step()
             accum_counter = 0
 
@@ -563,7 +565,11 @@ def main() -> None:
         clip_len=cfg["model"].get("clip_len", 8),
         num_classes=cfg["model"].get("num_classes", 5),
     ).to(device)
-    ema = ModelEMA(student, decay=float(st_cfg.get("ema_decay", 0.995)), warmup_tau=150.0)
+    ema = ModelEMA(
+        student,
+        decay=float(st_cfg.get("ema_decay", 0.99)),
+        warmup_tau=float(st_cfg.get("ema_warmup_tau", 50.0)),
+    )
     criterion = FASCombinedLoss().to(device)
     optimizer = torch.optim.AdamW(
         student.parameters(),

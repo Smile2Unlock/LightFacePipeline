@@ -18,7 +18,7 @@ train:
   p_normal: 0.30
   p_frozen: 0.20
   num_workers: 4
-  weight_decay: 0.0001
+  weight_decay: 0.01
   run_dir: runs/liveness_st_fas_lite_local
 
 teacher_stage:
@@ -32,10 +32,11 @@ teacher_stage:
 
 student_stage:
   batch_size_clips: 8
-  grad_accum: 4
-  epochs: 12
-  lr: 0.0015
-  ema_decay: 0.995
+  grad_accum: 1
+  epochs: 15
+  lr: 0.0012
+  ema_decay: 0.99
+  ema_warmup_tau: 50.0
   samples_per_epoch: 1600
   val_max_batches: null
 
