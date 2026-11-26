@@ -24,20 +24,20 @@ train:
 teacher_stage:
   batch_size_clips: 4
   grad_accum: 8
-  epochs: 12
+  epochs: 8
   lr: 0.0003
   hf_lr: 0.0001
-  samples_per_epoch: 3200
-  val_max_batches: 40
+  samples_per_epoch: 960
+  val_max_batches: null
 
 student_stage:
   batch_size_clips: 8
   grad_accum: 4
-  epochs: 20
+  epochs: 15
   lr: 0.0015
   ema_decay: 0.995
-  samples_per_epoch: 4800
-  val_max_batches: 50
+  samples_per_epoch: 1920
+  val_max_batches: null
 
 data:
   train_manifest: datasets/manifests/fas_video_clips_train.jsonl

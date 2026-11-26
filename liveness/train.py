@@ -477,16 +477,18 @@ def main() -> None:
             weight_decay=float(train_cfg.get("weight_decay", 1e-4)),
         )
         sampler = train_ds.build_balanced_sampler(num_samples=n_samples, balance_domains=True)
+        nw = int(train_cfg.get("num_workers", 4))
         loader = DataLoader(
             train_ds,
             batch_size=bs,
             sampler=sampler,
-            num_workers=int(train_cfg.get("num_workers", 4)),
+            num_workers=nw,
             pin_memory=True,
             drop_last=True,
+            persistent_workers=(nw > 0),
         )
         val_loader = (
-            DataLoader(val_ds, batch_size=max(bs * 2, 8), shuffle=False, num_workers=2, pin_memory=True)
+            DataLoader(val_ds, batch_size=max(bs * 2, 8), shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True)
             if val_ds is not None
             else None
         )
@@ -570,16 +572,18 @@ def main() -> None:
     )
 
     sampler = train_ds.build_balanced_sampler(num_samples=n_samples, balance_domains=True)
+    nw = int(train_cfg.get("num_workers", 4))
     loader = DataLoader(
         train_ds,
         batch_size=bs,
         sampler=sampler,
-        num_workers=int(train_cfg.get("num_workers", 4)),
+        num_workers=nw,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=(nw > 0),
     )
     val_loader = (
-        DataLoader(val_ds, batch_size=max(bs * 2, 16), shuffle=False, num_workers=2, pin_memory=True)
+        DataLoader(val_ds, batch_size=max(bs * 2, 16), shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True)
         if val_ds is not None
         else None
     )
